@@ -80,7 +80,7 @@ Free and open-source software under the **MIT License**.
 Clone the repository and run the automated installation target:
 
 ```bash
-git clone https://github.com/joaooliveira/MonoTab.git
+git clone https://github.com/JoaoOliveira889/MonoTab.git
 cd MonoTab
 make install
 ```
