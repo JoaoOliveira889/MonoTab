@@ -1,0 +1,69 @@
+# ==========================================
+# macOS System & Metadata Files
+# ==========================================
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# ==========================================
+# Build Artifacts & Application Bundles
+# ==========================================
+/.build/
+/build/
+DerivedData/
+*.app
+/MonoTab.app
+*.dSYM/
+*.dSYM.zip
+*.o
+*.dylib
+
+# ==========================================
+# Swift Package Manager
+# ==========================================
+.swiftpm/
+.index-build/
+
+# ==========================================
+# Xcode User State & Workspaces
+# ==========================================
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+*.xcuserdatad/
+*.xcuserstate
+*.xcworkspace/*
+!*.xcworkspace/contents.xcworkspacedata
+!*.xcworkspace/xcshareddata/
+
+# ==========================================
+# Logs, Dumps & Temporary Files
+# ==========================================
+*.log
+*.crash
+*.diag
+/tmp/
+tmp/
+
+# ==========================================
+# Environment & Secrets (Zero-Exposure)
+# ==========================================
+.env
+.env.*
+*.pem
+*.key
+*.p12
+
+# ==========================================
+# IDE & Text Editor Cache
+# ==========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak

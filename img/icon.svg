@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Background Chassis Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#141726" />
+      <stop offset="100%" stop-color="#0a0a14" />
+    </linearGradient>
+    
+    <!-- CRT Radial Phosphor Glow -->
+    <radialGradient id="crtGlow" cx="50%" cy="49%" r="55%">
+      <stop offset="0%" stop-color="#2e3861" stop-opacity="0.8" />
+      <stop offset="40%" stop-color="#12182b" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#080a12" stop-opacity="0.98" />
+    </radialGradient>
+    
+    <!-- Front Window Title Gradient -->
+    <linearGradient id="frontTitleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#3359b2" />
+      <stop offset="100%" stop-color="#243880" />
+    </linearGradient>
+    
+    <!-- Tab Arrow Gradient -->
+    <linearGradient id="tabArrowGrad" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#facd5c" />
+      <stop offset="100%" stop-color="#66e0fa" />
+    </linearGradient>
+
+    <!-- Scanline Pattern -->
+    <pattern id="scanlines" width="1024" height="7" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="3.5" x2="1024" y2="3.5" stroke="#000000" stroke-width="2" opacity="0.22" />
+    </pattern>
+
+    <!-- Squircle Clip Path -->
+    <clipPath id="squircleClip">
+      <rect x="32" y="32" width="960" height="960" rx="224" ry="224" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#squircleClip)">
+    <!-- Chassis Base -->
+    <rect x="32" y="32" width="960" height="960" rx="224" ry="224" fill="url(#bgGrad)" />
+
+    <!-- CRT Screen Base -->
+    <rect x="64" y="64" width="896" height="896" rx="160" ry="160" fill="#0f121e" />
+    <rect x="64" y="64" width="896" height="896" rx="160" ry="160" fill="url(#crtGlow)" />
+    <!-- Scanlines -->
+    <rect x="64" y="64" width="896" height="896" rx="160" ry="160" fill="url(#scanlines)" />
+
+    <!-- 1. BACK WINDOW (Retro 1984 Classic GUI) -->
+    <!-- Solid 80s Shadow -->
+    <rect x="176" y="260" width="520" height="420" fill="#000000" opacity="0.7" />
+    <!-- Window Body -->
+    <rect x="160" y="244" width="520" height="420" fill="#1f2438" stroke="#52618c" stroke-width="6" />
+    <!-- Title Bar -->
+    <rect x="160" y="244" width="520" height="60" fill="#2e3652" />
+    <!-- Title Bar Pinstripes -->
+    <g stroke="#47547a" stroke-width="3">
+      <line x1="230" y1="254" x2="610" y2="254" />
+      <line x1="230" y1="262" x2="610" y2="262" />
+      <line x1="230" y1="270" x2="610" y2="270" />
+      <line x1="230" y1="278" x2="610" y2="278" />
+      <line x1="230" y1="286" x2="610" y2="286" />
+      <line x1="230" y1="294" x2="610" y2="294" />
+    </g>
+    <!-- Classic Close Box -->
+    <rect x="178" y="258" width="32" height="32" fill="#3d4766" stroke="#000000" stroke-width="3" />
+    <!-- Inner Schematic Grid -->
+    <rect x="190" y="334" width="460" height="250" fill="#141726" opacity="0.9" />
+    <g stroke="#2e3857" stroke-width="2" opacity="0.6">
+      <line x1="210" y1="364" x2="630" y2="364" />
+      <line x1="210" y1="394" x2="630" y2="394" />
+      <line x1="210" y1="424" x2="630" y2="424" />
+      <line x1="210" y1="454" x2="630" y2="454" />
+      <line x1="210" y1="484" x2="630" y2="484" />
+      <line x1="210" y1="514" x2="630" y2="514" />
+      <line x1="210" y1="544" x2="630" y2="544" />
+    </g>
+
+    <!-- 2. FRONT WINDOW (Active Focus Window with Neon Accent) -->
+    <!-- Solid Shadow -->
+    <rect x="360" y="404" width="540" height="460" fill="#000000" opacity="0.85" />
+    <!-- Window Body -->
+    <rect x="340" y="384" width="540" height="460" fill="#1a1f33" />
+    <!-- Neon Outer Border -->
+    <rect x="340" y="384" width="540" height="460" fill="none" stroke="#7ab8ff" stroke-width="10" />
+    <!-- Neon Inner Highlight -->
+    <rect x="346" y="390" width="528" height="448" fill="none" stroke="#cce6ff" stroke-width="2" opacity="0.4" />
+    <!-- Title Bar -->
+    <rect x="340" y="384" width="540" height="60" fill="url(#frontTitleGrad)" />
+    <!-- Title Bar Pinstripes -->
+    <g stroke="#73a6ff" stroke-width="3" opacity="0.7">
+      <line x1="460" y1="394" x2="810" y2="394" />
+      <line x1="460" y1="402" x2="810" y2="402" />
+      <line x1="460" y1="410" x2="810" y2="410" />
+      <line x1="460" y1="418" x2="810" y2="418" />
+      <line x1="460" y1="426" x2="810" y2="426" />
+      <line x1="460" y1="434" x2="810" y2="434" />
+    </g>
+    <!-- Window Controls -->
+    <rect x="360" y="404" width="20" height="20" fill="#fa6666" stroke="#000000" stroke-width="2.5" />
+    <rect x="390" y="404" width="20" height="20" fill="#facc4d" stroke="#000000" stroke-width="2.5" />
+    <rect x="420" y="404" width="20" height="20" fill="#59e68c" stroke="#000000" stroke-width="2.5" />
+    <!-- Zoom Box -->
+    <rect x="835" y="402" width="22" height="22" fill="#4d73d9" stroke="#ffffff" stroke-width="2" opacity="0.9" />
+
+    <!-- Content Area -->
+    <rect x="366" y="468" width="488" height="350" fill="#121424" />
+
+    <!-- Mini Alt-Tab Preview Windows Inside Content -->
+    <!-- Left Mini Window -->
+    <rect x="394" y="488" width="125" height="90" fill="#000000" opacity="0.6" />
+    <rect x="390" y="484" width="125" height="90" fill="#1f2438" stroke="#404d73" stroke-width="2" />
+    <rect x="390" y="484" width="125" height="18" fill="#333b59" />
+
+    <!-- Center Active Mini Window (Highlighted) -->
+    <rect x="549" y="488" width="125" height="90" fill="#000000" opacity="0.6" />
+    <rect x="545" y="484" width="125" height="90" fill="#2e4785" stroke="#7ac2ff" stroke-width="4" />
+    <rect x="545" y="484" width="125" height="18" fill="#4d80e6" />
+
+    <!-- Right Mini Window -->
+    <rect x="704" y="488" width="125" height="90" fill="#000000" opacity="0.6" />
+    <rect x="700" y="484" width="125" height="90" fill="#1f2438" stroke="#404d73" stroke-width="2" />
+    <rect x="700" y="484" width="125" height="18" fill="#333b59" />
+
+    <!-- 3. CENTRAL ALT-TAB PIXEL-ART ARROWS & TAB STOP BAR -->
+    <!-- Tab Stop Bar -->
+    <rect x="730" y="694" width="20" height="75" fill="#facd5c" stroke="#000000" stroke-width="3" />
+
+    <!-- Main Cycle Arrow (Yellow -> Cyan Gradient) -->
+    <!-- Shadow -->
+    <path d="M 485 714 L 645 714 L 645 689 L 715 722 L 645 759 L 645 739 L 485 739 Z" fill="#000000" opacity="0.7" />
+    <!-- Arrow Body -->
+    <path d="M 480 719 L 640 719 L 640 694 L 710 727 L 640 764 L 640 744 L 480 744 Z" fill="url(#tabArrowGrad)" stroke="#000000" stroke-width="3.5" />
+
+    <!-- Return Arrow (Cyan/Blue) -->
+    <path d="M 620 781 L 460 781 L 460 764 L 410 789 L 460 814 L 460 797 L 620 797 Z" fill="#5980bf" stroke="#000000" stroke-width="2.5" />
+  </g>
+
+  <!-- Outer Squircle Bevel Rim Highlight -->
+  <rect x="32" y="32" width="960" height="960" rx="224" ry="224" fill="none" stroke="#7399d9" stroke-width="4" opacity="0.4" />
+</svg>
