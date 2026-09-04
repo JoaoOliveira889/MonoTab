@@ -12,6 +12,7 @@ public protocol HotkeyManagerDelegate: AnyObject {
     func hotkeyDidCancel()
     func hotkeyDidNavigate(direction: HotkeyManager.NavigationDirection)
     func hotkeyDidEnterSearchMode()
+    func hotkeyDidCloseSelectedWindow()
 }
 
 public final class HotkeyManager: @unchecked Sendable {
@@ -271,6 +272,14 @@ public final class HotkeyManager: @unchecked Sendable {
                 if keyCode == 53 {
                     DispatchQueue.main.async { [weak self] in
                         self?.delegate?.hotkeyDidCancel()
+                    }
+                    return nil
+                }
+
+                // Close selected window: 'w' (13) when not in search or settings mode
+                if !inSearchMode && !inSettings && keyCode == 13 {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.delegate?.hotkeyDidCloseSelectedWindow()
                     }
                     return nil
                 }

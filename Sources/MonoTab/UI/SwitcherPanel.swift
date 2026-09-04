@@ -154,6 +154,12 @@ public final class SwitcherPanelController {
         WindowManager.shared.focus(window: windowToFocus)
     }
 
+    public func closeSelectedWindow() {
+        guard let window = viewModel.selectedWindow else { return }
+        WindowManager.shared.close(window: window)
+        viewModel.removeWindow(id: window.id)
+    }
+
     public func updatePanelFrame(animate: Bool) {
         let mouseLocation = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }

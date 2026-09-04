@@ -20,17 +20,17 @@ public struct SwitcherView: View {
         preferences.displayMode == .fullscreen
     }
 
+    private var cardWidth: CGFloat {
+        isFullscreen ? 278 : 264
+    }
+
+    private var cardHeight: CGFloat {
+        isFullscreen ? 172 : 162
+    }
+
     private var columns: [GridItem] {
-        let count = viewModel.filteredWindows.count
-        let colCount: Int
-        if count <= 3 {
-            colCount = max(1, count)
-        } else if count <= 8 {
-            colCount = min(4, max(2, (count + 1) / 2))
-        } else {
-            colCount = isFullscreen ? 5 : 4
-        }
-        return Array(repeating: GridItem(.flexible(minimum: 240, maximum: 300), spacing: 16), count: colCount)
+        let colCount = viewModel.columnCount(isFullscreen: isFullscreen)
+        return Array(repeating: GridItem(.flexible(minimum: cardWidth - 8, maximum: cardWidth + 30), spacing: 16), count: colCount)
     }
 
     public var body: some View {
@@ -172,11 +172,17 @@ public struct SwitcherView: View {
                                             window: window,
                                             thumbnail: viewModel.thumbnails[window.id],
                                             isSelected: viewModel.selectedIndex == index,
+                                            cardWidth: cardWidth,
+                                            cardHeight: cardHeight,
                                             onSelect: {
                                                 viewModel.selectedIndex = index
                                             },
                                             onActivate: {
                                                 onConfirm()
+                                            },
+                                            onClose: {
+                                                WindowManager.shared.close(window: window)
+                                                viewModel.removeWindow(id: window.id)
                                             }
                                         )
                                         .id(window.id)
@@ -188,9 +194,9 @@ public struct SwitcherView: View {
 
                             Spacer(minLength: 0)
                         }
-                        .frame(minHeight: isFullscreen ? 480 : 320)
+                        .frame(minHeight: isFullscreen ? 520 : 340)
                     }
-                    .frame(maxHeight: isFullscreen ? 750 : 580)
+                    .frame(maxHeight: isFullscreen ? 820 : 640)
                     .onChange(of: viewModel.selectedIndex) { _, newIndex in
                         let list = viewModel.filteredWindows
                         if newIndex >= 0 && newIndex < list.count {
@@ -206,9 +212,10 @@ public struct SwitcherView: View {
                     ShortcutHint(key: shortcutLabel, description: "Next")
                     ShortcutHint(key: "⇧ + ⇥", description: "Back")
                     ShortcutHint(key: "↑ ↓ ← → / hjkl", description: "Navigate")
+                    ShortcutHint(key: "w", description: "Close")
                     ShortcutHint(key: "f or /", description: "Search")
                     ShortcutHint(key: "⏎", description: "Select")
-                    ShortcutHint(key: "⎋", description: "Close")
+                    ShortcutHint(key: "⎋", description: "Dismiss")
 
                     Spacer()
 
@@ -221,10 +228,10 @@ public struct SwitcherView: View {
                 .padding(.top, 2)
             }
             .frame(
-                minWidth: isFullscreen ? 900 : 800,
+                minWidth: isFullscreen ? 1080 : 860,
                 maxWidth: isFullscreen
-                    ? min(1500, max(900, CGFloat(columns.count) * 285 + 90))
-                    : min(1360, max(800, CGFloat(columns.count) * 280 + 80)),
+                    ? min(2050, max(1080, CGFloat(columns.count) * (cardWidth + 24) + 100))
+                    : min(1600, max(860, CGFloat(columns.count) * (cardWidth + 20) + 80)),
                 alignment: .center
             )
             .liquidGlassPanel(cornerRadius: 24)

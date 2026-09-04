@@ -4,8 +4,11 @@ public struct WindowThumbnailCard: View {
     let window: WindowInfo
     let thumbnail: NSImage?
     let isSelected: Bool
+    let cardWidth: CGFloat
+    let cardHeight: CGFloat
     let onSelect: () -> Void
     let onActivate: () -> Void
+    let onClose: (() -> Void)?
 
     @State private var isHovered: Bool = false
 
@@ -13,14 +16,20 @@ public struct WindowThumbnailCard: View {
         window: WindowInfo,
         thumbnail: NSImage?,
         isSelected: Bool,
+        cardWidth: CGFloat = 270,
+        cardHeight: CGFloat = 166,
         onSelect: @escaping () -> Void,
-        onActivate: @escaping () -> Void
+        onActivate: @escaping () -> Void,
+        onClose: (() -> Void)? = nil
     ) {
         self.window = window
         self.thumbnail = thumbnail
         self.isSelected = isSelected
+        self.cardWidth = cardWidth
+        self.cardHeight = cardHeight
         self.onSelect = onSelect
         self.onActivate = onActivate
+        self.onClose = onClose
     }
 
     public var body: some View {
@@ -56,8 +65,27 @@ public struct WindowThumbnailCard: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+
+                if isHovered, let onClose = onClose {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Button(action: onClose) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.white.opacity(0.85))
+                                    .shadow(color: Color.black.opacity(0.5), radius: 3, x: 0, y: 1)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(6)
+                            .help("Close window (w)")
+                        }
+                        Spacer()
+                    }
+                    .transition(.opacity)
+                }
             }
-            .frame(width: 248, height: 154)
+            .frame(width: cardWidth, height: cardHeight)
             .clipped()
 
             HStack(spacing: 8) {
@@ -103,7 +131,7 @@ public struct WindowThumbnailCard: View {
                 }
                 Spacer(minLength: 0)
             }
-            .frame(width: 248)
+            .frame(width: cardWidth)
         }
         .padding(8)
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))

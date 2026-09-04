@@ -95,4 +95,25 @@ final class WindowInfoTests: XCTestCase {
         let minWin = WindowInfo(id: 2, pid: 10, appName: "App", title: "Win", bounds: .zero, layer: 0, isMinimized: true)
         XCTAssertTrue(minWin.isMinimized)
     }
+
+    @MainActor
+    func testPreferencesDefaults() {
+        let prefs = PreferencesManager.shared
+        // showAppTabs should default to false (windows only, grouped tabs)
+        XCTAssertFalse(prefs.showAppTabs)
+        // currentSpaceOnly should default to true (current desktop space only)
+        XCTAssertTrue(prefs.currentSpaceOnly)
+    }
+
+    func testFetchActiveWindowsSafeExecution() {
+        let windows = WindowManager.shared.fetchActiveWindows(
+            includeMinimized: false,
+            showTabs: false,
+            currentSpaceOnly: true
+        )
+        XCTAssertNotNil(windows)
+        for win in windows {
+            XCTAssertFalse(win.isMinimized, "Active on-screen windows must not be marked as minimized")
+        }
+    }
 }

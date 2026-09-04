@@ -84,4 +84,29 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(vm.filteredWindows.count, 0)
         XCTAssertNil(vm.selectedWindow)
     }
+
+    func testRemoveWindowAdjustsSelection() {
+        let vm = SwitcherViewModel()
+        vm.windows = [
+            WindowInfo(id: 1, pid: 10, appName: "App 1", title: "Win 1", bounds: .zero, layer: 0),
+            WindowInfo(id: 2, pid: 20, appName: "App 2", title: "Win 2", bounds: .zero, layer: 0),
+            WindowInfo(id: 3, pid: 30, appName: "App 3", title: "Win 3", bounds: .zero, layer: 0)
+        ]
+        vm.selectedIndex = 2
+
+        // Remove last window (index 2) -> selection should adjust to index 1
+        vm.removeWindow(id: 3)
+        XCTAssertEqual(vm.windows.count, 2)
+        XCTAssertEqual(vm.selectedIndex, 1)
+
+        // Remove window in the middle
+        vm.removeWindow(id: 2)
+        XCTAssertEqual(vm.windows.count, 1)
+        XCTAssertEqual(vm.selectedIndex, 0)
+
+        // Remove last remaining window
+        vm.removeWindow(id: 1)
+        XCTAssertEqual(vm.windows.count, 0)
+        XCTAssertEqual(vm.selectedIndex, 0)
+    }
 }

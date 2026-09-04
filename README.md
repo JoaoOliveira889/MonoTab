@@ -51,6 +51,10 @@ Free and open-source software under the **MIT License**.
   - Press `f` or `/` during navigation to open search immediately.
   - Releasing modifier keys (⌥ / ⌘) in search mode **keeps MonoTab open**, allowing natural two-handed typing.
   - Press `Escape` to clear search or exit; press `Enter` to focus the matched window.
+- **Instant Window Close (`w`)**:
+  - Close background or active windows directly from the switcher grid using the `w` key or the hover close button (`×`), without needing to switch to the window first.
+- **Launch at Login**:
+  - Native auto-start toggle integrated directly with macOS `SMAppService` and System Settings.
 - **Floating & Fullscreen Modes**:
   - Toggle between a centered, spacious floating HUD and an expanded fullscreen grid.
 - **Minimized Window Support**:
@@ -140,11 +144,12 @@ When MonoTab opens for the first time, a setup banner will guide you to enable e
 | **`⌥ Tab`** or **`⌘ Tab`** | System-wide | Open MonoTab and cycle to next window |
 | **`⇧ + ⇥`** *(Shift + Tab)* | Switcher visible | Cycle to previous window |
 | **Release `⌥` / `⌘`** | Switcher visible | Confirm selection and focus window immediately |
+| **`w`** | Switcher visible | Close selected window via Accessibility API |
 | **`f`** or **`/`** | Switcher visible | Enter Search Mode (keeps window open without holding keys) |
 | **`↑ ↓ ← →`** | Switcher visible | Navigate window grid |
 | **`h j k l`** | Switcher visible | Vim navigation (Left, Down, Up, Right) |
 | **`⏎`** *(Enter)* | Switcher / Search | Focus selected window and close switcher |
-| **`⎋`** *(Escape)* | Switcher visible | Cancel switcher / Exit search mode / Close settings |
+| **`⎋`** *(Escape)* | Switcher visible | Dismiss switcher / Exit search mode / Close settings |
 | **`⌘ ,`** | Switcher visible | Open Preferences modal |
 
 ---

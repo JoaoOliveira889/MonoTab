@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import ScreenCaptureKit
+import SwiftUI
 
 @MainActor
 public final class SwitcherViewModel: ObservableObject {
@@ -41,7 +42,13 @@ public final class SwitcherViewModel: ObservableObject {
         isSettingsOpen = false
 
         let showMinimized = PreferencesManager.shared.showMinimizedWindows
-        let activeWindows = WindowManager.shared.fetchActiveWindows(includeMinimized: showMinimized)
+        let showTabs = PreferencesManager.shared.showAppTabs
+        let currentSpaceOnly = PreferencesManager.shared.currentSpaceOnly
+        let activeWindows = WindowManager.shared.fetchActiveWindows(
+            includeMinimized: showMinimized,
+            showTabs: showTabs,
+            currentSpaceOnly: currentSpaceOnly
+        )
         self.windows = activeWindows
 
         // Preload any cached thumbnails instantly
@@ -85,9 +92,6 @@ public final class SwitcherViewModel: ObservableObject {
             for winID in prioritizedIDs {
                 if Task.isCancelled { break }
                 guard let self = self else { break }
-
-                // Skip if already preloaded from cache
-                if self.thumbnails[winID] != nil { continue }
                 guard let scWin = windowMap[winID] else { continue }
 
                 if let thumb = await WindowManager.shared.captureThumbnail(for: winID, from: scWin) {
@@ -95,6 +99,22 @@ public final class SwitcherViewModel: ObservableObject {
                         self.thumbnails[winID] = thumb
                     }
                 }
+
+                // Cooperative pause to avoid CPU/GPU contention with the UI animations
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
+    }
+
+    public func removeWindow(id: CGWindowID) {
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
+            windows.removeAll { $0.id == id }
+            thumbnails.removeValue(forKey: id)
+            let remaining = filteredWindows.count
+            if remaining == 0 {
+                selectedIndex = 0
+            } else if selectedIndex >= remaining {
+                selectedIndex = max(0, remaining - 1)
             }
         }
     }
@@ -109,6 +129,21 @@ public final class SwitcherViewModel: ObservableObject {
         let count = filteredWindows.count
         guard count > 0 else { return }
         selectedIndex = (selectedIndex - 1 + count) % count
+    }
+
+    public func columnCount(isFullscreen: Bool) -> Int {
+        let count = filteredWindows.count
+        if count <= 2 {
+            return max(1, count)
+        } else if count <= 4 {
+            return min(4, count)
+        } else if count <= 8 {
+            return isFullscreen ? min(5, max(3, count)) : min(4, max(2, (count + 1) / 2))
+        } else if count <= 14 {
+            return isFullscreen ? 6 : 5
+        } else {
+            return isFullscreen ? 7 : 5
+        }
     }
 
     public func navigate(direction: HotkeyManager.NavigationDirection, columns: Int) {

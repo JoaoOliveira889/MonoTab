@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import ServiceManagement
 
 public enum ShortcutPreference: String, CaseIterable, Identifiable {
     case optionTab = "optionTab"
@@ -13,6 +14,14 @@ public enum ShortcutPreference: String, CaseIterable, Identifiable {
         case .optionTab: return "⌥ Option + Tab"
         case .commandTab: return "⌘ Command + Tab"
         case .both: return "Both (⌥ & ⌘)"
+        }
+    }
+
+    public var shortName: String {
+        switch self {
+        case .optionTab: return "⌥ Tab"
+        case .commandTab: return "⌘ Tab"
+        case .both: return "Both"
         }
     }
 
@@ -46,6 +55,8 @@ public final class PreferencesManager: ObservableObject {
     private let kShortcutKey = "monotab_shortcut_preference"
     private let kDisplayModeKey = "monotab_display_mode"
     private let kShowMinimizedKey = "monotab_show_minimized"
+    private let kShowAppTabsKey = "monotab_show_app_tabs"
+    private let kCurrentSpaceOnlyKey = "monotab_current_space_only"
 
     @Published public var shortcut: ShortcutPreference {
         didSet {
@@ -65,6 +76,40 @@ public final class PreferencesManager: ObservableObject {
         }
     }
 
+    @Published public var showAppTabs: Bool {
+        didSet {
+            UserDefaults.standard.set(showAppTabs, forKey: kShowAppTabsKey)
+        }
+    }
+
+    @Published public var currentSpaceOnly: Bool {
+        didSet {
+            UserDefaults.standard.set(currentSpaceOnly, forKey: kCurrentSpaceOnlyKey)
+        }
+    }
+
+    public var launchAtLogin: Bool {
+        get {
+            SMAppService.mainApp.status == .enabled
+        }
+        set {
+            objectWillChange.send()
+            do {
+                if newValue {
+                    if SMAppService.mainApp.status != .enabled {
+                        try SMAppService.mainApp.register()
+                    }
+                } else {
+                    if SMAppService.mainApp.status == .enabled {
+                        try SMAppService.mainApp.unregister()
+                    }
+                }
+            } catch {
+                AppLogger.error("Error configuring launch at login: \(error)")
+            }
+        }
+    }
+
     private init() {
         let savedShortcut = UserDefaults.standard.string(forKey: kShortcutKey) ?? ShortcutPreference.both.rawValue
         self.shortcut = ShortcutPreference(rawValue: savedShortcut) ?? .both
@@ -73,6 +118,8 @@ public final class PreferencesManager: ObservableObject {
         self.displayMode = DisplayModePreference(rawValue: savedDisplayMode) ?? .compact
 
         self.showMinimizedWindows = UserDefaults.standard.bool(forKey: kShowMinimizedKey)
+        self.showAppTabs = UserDefaults.standard.bool(forKey: kShowAppTabsKey)
+        self.currentSpaceOnly = UserDefaults.standard.object(forKey: kCurrentSpaceOnlyKey) as? Bool ?? true
     }
 
     public func toggleDisplayMode() {

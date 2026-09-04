@@ -67,13 +67,17 @@ MonoTab combines **AppKit**, **SwiftUI**, **ScreenCaptureKit**, and the macOS **
 - **Purge on Close**: Windows no longer present in the window manager list are immediately purged from memory.
 - **Instant Response**: Returning to MonoTab displays previously cached thumbnails in 0ms without waiting for ScreenCaptureKit frame capture.
 
-### 4. Window Focusing & Restoration
+### 4. Window Focusing, Closing & Restoration
 - **Process Activation**: `NSRunningApplication.activate()` brings the target process to the foreground.
 - **Accessibility Inspection**: `AXUIElementCreateApplication` and `kAXWindowsAttribute` locate the matching window by title and coordinates.
 - **Restoration**: If the window was minimized to the Dock, `kAXMinimizedAttribute` is set to `kCFBooleanFalse`.
 - **Elevation**: `kAXRaiseAction` elevates the target window above all other desktop layers.
+- **Window Closing**: `kAXCloseButtonAttribute` and `AXUIElementPerformAction(..., kAXPressAction)` simulate clicking the window's close button natively without terminating the application.
 
-### 5. Liquid Glass Design System (`LiquidGlassModifiers`)
+### 5. Launch at Login Integration
+- **ServiceManagement**: Uses `SMAppService.mainApp` to register and unregister MonoTab directly with macOS System Settings (Login Items).
+
+### 6. Liquid Glass Design System (`LiquidGlassModifiers`)
 - **Optical Layering**: Combines `NSVisualEffectView(.hudWindow)` with ambient gradient depth layers.
 - **Continuous Bevels**: All panels, cards, and capsules use Apple continuous squircles (`RoundedRectangle(..., style: .continuous)`).
 - **Rim Lighting**: Multi-stop specular gradients trace borders to replicate frosted glass optics under varying desktop wallpaper backgrounds.

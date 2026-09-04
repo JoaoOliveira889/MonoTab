@@ -80,12 +80,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDe
     }
 
     public func hotkeyDidNavigate(direction: HotkeyManager.NavigationDirection) {
-        let count = SwitcherPanelController.shared.viewModel.filteredWindows.count
-        let cols = count <= 4 ? max(1, count) : 4
-        SwitcherPanelController.shared.viewModel.navigate(direction: direction, columns: cols)
+        let vm = SwitcherPanelController.shared.viewModel
+        let isFullscreen = PreferencesManager.shared.displayMode == .fullscreen
+        let cols = vm.columnCount(isFullscreen: isFullscreen)
+        vm.navigate(direction: direction, columns: cols)
     }
 
     public func hotkeyDidEnterSearchMode() {
         SwitcherPanelController.shared.enterSearchMode()
+    }
+
+    public func hotkeyDidCloseSelectedWindow() {
+        SwitcherPanelController.shared.closeSelectedWindow()
     }
 }
