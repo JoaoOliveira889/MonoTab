@@ -1,96 +1,99 @@
 import AppKit
-import Foundation
 
 @MainActor
-public final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate {
     private var permissionPollTask: Task<Void, Never>?
 
-    public func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        PermissionsManager.shared.refresh()
-
-        if !PermissionsManager.shared.hasAccessibility {
-            PermissionsManager.shared.checkAccessibility(prompt: true)
+        let permissions = PermissionsManager.shared
+        permissions.refresh(force: true)
+        if !permissions.hasAccessibility {
+            permissions.requestAccessibility()
         }
 
         HotkeyManager.shared.delegate = self
-        let success = HotkeyManager.shared.start()
+        HotkeyManager.shared.setShortcutPreference(PreferencesManager.shared.shortcut)
 
         _ = SwitcherPanelController.shared
+        StatusItemController.shared.setVisible(PreferencesManager.shared.showMenuBarIcon)
 
-        if !success {
+        if !HotkeyManager.shared.start() {
             startPermissionPolling()
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        permissionPollTask?.cancel()
+        permissionPollTask = nil
+        HotkeyManager.shared.stop()
+        SwitcherPanelController.shared.viewModel.cancelPendingWork()
+        WindowManager.shared.clearCache()
+        AppIconCache.clear()
+    }
+
     private func startPermissionPolling() {
         permissionPollTask?.cancel()
-        permissionPollTask = Task { @MainActor in
+        permissionPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1.2))
-                guard !Task.isCancelled else { break }
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled else { return }
 
-                if PermissionsManager.shared.checkAccessibility(prompt: false) {
-                    if HotkeyManager.shared.start() {
-                        break
-                    }
-                }
+                PermissionsManager.shared.refresh(force: true)
+                guard PermissionsManager.shared.hasAccessibility, HotkeyManager.shared.start() else { continue }
+
+                self?.permissionPollTask = nil
+                return
             }
         }
     }
 
-    public func applicationWillTerminate(_ notification: Notification) {
-        permissionPollTask?.cancel()
-        permissionPollTask = nil
-        HotkeyManager.shared.stop()
-        WindowManager.shared.clearCache()
-    }
-
-    public func hotkeyDidTriggerOpen() {
+    func hotkeyDidTriggerOpen() {
         SwitcherPanelController.shared.show()
     }
 
-    public func hotkeyDidCycleNext() {
-        if !SwitcherPanelController.shared.isVisible {
-            SwitcherPanelController.shared.show()
+    func hotkeyDidCycleNext() {
+        let controller = SwitcherPanelController.shared
+        if controller.isVisible {
+            controller.viewModel.selectNext()
         } else {
-            SwitcherPanelController.shared.viewModel.selectNext()
+            controller.show()
         }
     }
 
-    public func hotkeyDidCyclePrevious() {
-        if !SwitcherPanelController.shared.isVisible {
-            SwitcherPanelController.shared.show()
+    func hotkeyDidCyclePrevious() {
+        let controller = SwitcherPanelController.shared
+        if controller.isVisible {
+            controller.viewModel.selectPrevious()
         } else {
-            SwitcherPanelController.shared.viewModel.selectPrevious()
+            controller.show()
         }
     }
 
-    public func hotkeyDidReleaseModifier() {
+    func hotkeyDidConfirm() {
         SwitcherPanelController.shared.confirmSelection()
     }
 
-    public func hotkeyDidConfirm() {
-        SwitcherPanelController.shared.confirmSelection()
-    }
-
-    public func hotkeyDidCancel() {
+    func hotkeyDidCancel() {
         SwitcherPanelController.shared.handleEscape()
     }
 
-    public func hotkeyDidNavigate(direction: HotkeyManager.NavigationDirection) {
-        let vm = SwitcherPanelController.shared.viewModel
+    func hotkeyDidNavigate(direction: HotkeyManager.NavigationDirection) {
+        let viewModel = SwitcherPanelController.shared.viewModel
         let isFullscreen = PreferencesManager.shared.displayMode == .fullscreen
-        let cols = vm.columnCount(isFullscreen: isFullscreen)
-        vm.navigate(direction: direction, columns: cols)
+        viewModel.navigate(direction: direction, columns: viewModel.columnCount(isFullscreen: isFullscreen))
     }
 
-    public func hotkeyDidEnterSearchMode() {
+    func hotkeyDidEnterSearchMode() {
         SwitcherPanelController.shared.enterSearchMode()
     }
 
-    public func hotkeyDidCloseSelectedWindow() {
+    func hotkeyDidCloseSelectedWindow() {
         SwitcherPanelController.shared.closeSelectedWindow()
+    }
+
+    func hotkeyDidQuitSelectedApp() {
+        SwitcherPanelController.shared.quitSelectedApp()
     }
 }

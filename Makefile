@@ -27,8 +27,12 @@ app: build
 	@cp $(BUILD_DIR)/$(APP_NAME) $(APP_DIR)/MacOS/
 	@cp Resources/Info.plist $(APP_DIR)/Info.plist
 	@cp Resources/AppIcon.icns $(APP_DIR)/Resources/AppIcon.icns
-	@echo "==> Assinando bundle com $(CODESIGN_IDENTITY) e Entitlements..."
-	@codesign --force --deep --sign "$(CODESIGN_IDENTITY)" --entitlements Resources/Entitlements.plist $(BUNDLE_NAME)
+	@echo "==> Assinando bundle com $(CODESIGN_IDENTITY), Hardened Runtime e Entitlements..."
+	@codesign --force --options=runtime --timestamp=none \
+		--sign "$(CODESIGN_IDENTITY)" \
+		--entitlements Resources/Entitlements.plist \
+		$(BUNDLE_NAME)
+	@codesign --verify --strict --verbose=1 $(BUNDLE_NAME)
 	@echo "==> $(BUNDLE_NAME) criado com sucesso!"
 
 run: app

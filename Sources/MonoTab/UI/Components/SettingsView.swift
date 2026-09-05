@@ -1,17 +1,16 @@
 import SwiftUI
 
-public struct SettingsView: View {
-    @ObservedObject var preferences = PreferencesManager.shared
-    @ObservedObject var permissions = PermissionsManager.shared
+struct SettingsView: View {
+    @Bindable private var preferences = PreferencesManager.shared
+    private let permissions = PermissionsManager.shared
     let onClose: () -> Void
 
-    public init(onClose: @escaping () -> Void) {
+    init(onClose: @escaping () -> Void) {
         self.onClose = onClose
     }
 
-    public var body: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Header
             HStack {
                 HStack(spacing: 8) {
                     Image(systemName: "gearshape.fill")
@@ -39,9 +38,7 @@ public struct SettingsView: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 14) {
-                    // Section 1: General
                     SettingsSection(title: "General") {
-                        // Launch at Login
                         SettingsRow(
                             icon: "arrow.clockwise.circle.fill",
                             iconColor: .blue,
@@ -55,7 +52,19 @@ public struct SettingsView: View {
 
                         Divider().opacity(0.15)
 
-                        // Global Activation Shortcut
+                        SettingsRow(
+                            icon: "menubar.arrow.up.rectangle",
+                            iconColor: .green,
+                            title: "Menu Bar Icon",
+                            subtitle: "The only way to reach preferences or quit while the hotkey is unavailable."
+                        ) {
+                            Toggle("", isOn: $preferences.showMenuBarIcon)
+                                .toggleStyle(.switch)
+                                .labelsHidden()
+                        }
+
+                        Divider().opacity(0.15)
+
                         SettingsRow(
                             icon: "keyboard.fill",
                             iconColor: .purple,
@@ -73,7 +82,6 @@ public struct SettingsView: View {
 
                         Divider().opacity(0.15)
 
-                        // Display Mode
                         SettingsRow(
                             icon: "macwindow.on.rectangle",
                             iconColor: .indigo,
@@ -92,9 +100,7 @@ public struct SettingsView: View {
                         }
                     }
 
-                    // Section 2: Windows & Spaces
                     SettingsSection(title: "Windows & Spaces") {
-                        // Workspaces / Spaces
                         SettingsRow(
                             icon: "square.grid.2x2.fill",
                             iconColor: .teal,
@@ -113,7 +119,6 @@ public struct SettingsView: View {
 
                         Divider().opacity(0.15)
 
-                        // Window Visibility
                         SettingsRow(
                             icon: "macwindow.badge.plus",
                             iconColor: .orange,
@@ -127,7 +132,6 @@ public struct SettingsView: View {
 
                         Divider().opacity(0.15)
 
-                        // Tab Visibility
                         SettingsRow(
                             icon: "rectangle.split.2x1.fill",
                             iconColor: .cyan,
@@ -148,27 +152,20 @@ public struct SettingsView: View {
                         }
                     }
 
-                    // Section 3: Permissions
                     SettingsSection(title: "System Permissions") {
                         HStack(spacing: 12) {
                             PermissionStatusCard(
                                 title: "Accessibility",
                                 description: "Global hotkeys & window control",
                                 isGranted: permissions.hasAccessibility,
-                                action: {
-                                    permissions.checkAccessibility(prompt: true)
-                                    permissions.openAccessibilitySettings()
-                                }
+                                action: { permissions.openAccessibilityPreferences() }
                             )
 
                             PermissionStatusCard(
                                 title: "Screen Recording",
                                 description: "Window preview thumbnails",
                                 isGranted: permissions.hasScreenRecording,
-                                action: {
-                                    permissions.checkScreenRecording(prompt: true)
-                                    permissions.openScreenRecordingSettings()
-                                }
+                                action: { permissions.openScreenRecordingPreferences() }
                             )
                         }
                     }
@@ -178,7 +175,6 @@ public struct SettingsView: View {
             Divider()
                 .opacity(0.20)
 
-            // Footer: Privacy & Done Button
             HStack(alignment: .center) {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.shield.fill")
@@ -215,11 +211,9 @@ public struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 600, height: 530)
-        .liquidGlassPanel(cornerRadius: 20)
+        .glassPanel(cornerRadius: 20)
     }
 }
-
-// MARK: - Subcomponents
 
 private struct SettingsSection<Content: View>: View {
     let title: String
@@ -236,14 +230,7 @@ private struct SettingsSection<Content: View>: View {
                 content()
             }
             .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.white.opacity(0.04))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.75)
-            )
+            .surfaceTile(cornerRadius: 12)
         }
     }
 }
@@ -313,14 +300,7 @@ private struct PermissionStatusCard: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.04))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.75)
-            )
+            .surfaceTile(cornerRadius: 8)
         }
         .buttonStyle(.plain)
     }

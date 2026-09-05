@@ -1,66 +1,85 @@
 import AppKit
 import ApplicationServices
-import Combine
-import Foundation
+import Observation
 
 @MainActor
-public final class PermissionsManager: ObservableObject {
-    public static let shared = PermissionsManager()
+@Observable
+final class PermissionsManager {
+    static let shared = PermissionsManager()
 
-    @Published public private(set) var hasAccessibility: Bool = false
-    @Published public private(set) var hasScreenRecording: Bool = false
-    @Published public var bannerDismissed: Bool = UserDefaults.standard.bool(forKey: "monotab_banner_dismissed")
+    private static let cacheLifetime = Duration.milliseconds(750)
 
-    public var allGranted: Bool {
+    private(set) var hasAccessibility = false
+    private(set) var hasScreenRecording = false
+
+    var bannerDismissed: Bool {
+        didSet { UserDefaults.standard.set(bannerDismissed, forKey: "monotab_banner_dismissed") }
+    }
+
+    @ObservationIgnored private var lastRefresh: ContinuousClock.Instant?
+
+    var allGranted: Bool {
         hasAccessibility && hasScreenRecording
     }
 
     private init() {
-        refresh()
+        bannerDismissed = UserDefaults.standard.bool(forKey: "monotab_banner_dismissed")
+        refresh(force: true)
     }
 
-    public func dismissBanner() {
+    func dismissBanner() {
         bannerDismissed = true
-        UserDefaults.standard.set(true, forKey: "monotab_banner_dismissed")
     }
 
-    public func refresh() {
-        hasAccessibility = checkAccessibility(prompt: false)
-        hasScreenRecording = checkScreenRecording(prompt: false)
+    func refresh(force: Bool = false) {
+        let now = ContinuousClock.now
+        if !force, let lastRefresh, now - lastRefresh < Self.cacheLifetime { return }
+        lastRefresh = now
+
+        hasAccessibility = AXIsProcessTrusted()
+        hasScreenRecording = CGPreflightScreenCaptureAccess()
     }
 
     @discardableResult
-    public func checkAccessibility(prompt: Bool = false) -> Bool {
-        let options = ["AXTrustedCheckOptionPrompt": prompt] as CFDictionary
+    func requestAccessibility() -> Bool {
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
-        self.hasAccessibility = trusted
+        hasAccessibility = trusted
+        lastRefresh = ContinuousClock.now
         return trusted
     }
 
     @discardableResult
-    public func checkScreenRecording(prompt: Bool = false) -> Bool {
+    func requestScreenRecording() -> Bool {
         if CGPreflightScreenCaptureAccess() {
-            self.hasScreenRecording = true
+            hasScreenRecording = true
             return true
         }
-        if prompt {
-            let requested = CGRequestScreenCaptureAccess()
-            self.hasScreenRecording = requested
-            return requested
-        }
-        self.hasScreenRecording = false
-        return false
+        hasScreenRecording = CGRequestScreenCaptureAccess()
+        lastRefresh = ContinuousClock.now
+        return hasScreenRecording
     }
 
-    public func openAccessibilitySettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
+    func openAccessibilitySettings() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
     }
 
-    public func openScreenRecordingSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-            NSWorkspace.shared.open(url)
-        }
+    func openScreenRecordingSettings() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+    }
+
+    func openAccessibilityPreferences() {
+        requestAccessibility()
+        openAccessibilitySettings()
+    }
+
+    func openScreenRecordingPreferences() {
+        requestScreenRecording()
+        openScreenRecordingSettings()
+    }
+
+    private func open(_ urlString: String) {
+        guard let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open(url)
     }
 }

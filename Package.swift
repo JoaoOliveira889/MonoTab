@@ -16,13 +16,20 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "MonoTab",
-            dependencies: [],
-            path: "Sources/MonoTab"
+            path: "Sources/MonoTab",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableUpcomingFeature("ExistentialAny"),
+                .enableUpcomingFeature("InternalImportsByDefault")
+            ]
         ),
         .testTarget(
             name: "MonoTabTests",
             dependencies: ["MonoTab"],
-            path: "Tests/MonoTabTests"
+            path: "Tests/MonoTabTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
         )
     ]
 )

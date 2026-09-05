@@ -1,152 +1,177 @@
-import AppKit
-import Combine
+import CoreGraphics
 import Foundation
-import ScreenCaptureKit
+import Observation
 import SwiftUI
 
 @MainActor
-public final class SwitcherViewModel: ObservableObject {
-    @Published public var windows: [WindowInfo] = []
-    @Published public var isSearchMode: Bool = false
-    @Published public var isSettingsOpen: Bool = false
-    @Published public var searchQuery: String = "" {
+@Observable
+final class ThumbnailSlot {
+    var image: CGImage?
+
+    init(image: CGImage? = nil) {
+        self.image = image
+    }
+}
+
+private struct RankedWindow {
+    let window: WindowInfo
+    let score: Int
+    let order: Int
+}
+
+@MainActor
+@Observable
+final class SwitcherViewModel {
+    var windows: [WindowInfo] = [] {
+        didSet { applyFilter() }
+    }
+
+    private(set) var filteredWindows: [WindowInfo] = []
+
+    var searchQuery: String = "" {
         didSet {
+            guard searchQuery != oldValue else { return }
+            applyFilter()
             selectedIndex = 0
         }
     }
-    @Published public var selectedIndex: Int = 0
-    @Published public var thumbnails: [CGWindowID: NSImage] = [:]
 
-    private var thumbnailTask: Task<Void, Never>?
+    var selectedIndex: Int = 0
 
-    public init() {}
+    var maxGridHeight: CGFloat = 640
 
-    public var filteredWindows: [WindowInfo] {
-        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return windows
+    var isSearchMode: Bool = false {
+        didSet {
+            guard isSearchMode != oldValue else { return }
+            onOverlayStateChange?()
         }
-        return windows.filter { $0.matches(query: trimmed) }
     }
 
-    public var selectedWindow: WindowInfo? {
-        let list = filteredWindows
-        guard selectedIndex >= 0 && selectedIndex < list.count else { return nil }
-        return list[selectedIndex]
+    var isSettingsOpen: Bool = false {
+        didSet {
+            guard isSettingsOpen != oldValue else { return }
+            onOverlayStateChange?()
+        }
     }
 
-    public func refreshWindows() {
-        thumbnailTask?.cancel()
+    @ObservationIgnored var onOverlayStateChange: (@MainActor () -> Void)?
+    @ObservationIgnored private var slots: [CGWindowID: ThumbnailSlot] = [:]
+    @ObservationIgnored private var extendedFetchTask: Task<Void, Never>?
+    @ObservationIgnored private var thumbnailTask: Task<Void, Never>?
+
+    init() {}
+
+    var selectedWindow: WindowInfo? {
+        filteredWindows.indices.contains(selectedIndex) ? filteredWindows[selectedIndex] : nil
+    }
+
+    func slot(for windowID: CGWindowID) -> ThumbnailSlot {
+        if let existing = slots[windowID] { return existing }
+        let slot = ThumbnailSlot(image: WindowManager.shared.cachedThumbnail(for: windowID))
+        slots[windowID] = slot
+        return slot
+    }
+
+    private func applyFilter() {
+        let query = WindowInfo.normalize(searchQuery)
+        guard !query.isEmpty else {
+            filteredWindows = windows
+            return
+        }
+
+        var ranked: [RankedWindow] = []
+        ranked.reserveCapacity(windows.count)
+        for (index, window) in windows.enumerated() {
+            guard let score = window.matchScore(normalizedQuery: query) else { continue }
+            ranked.append(RankedWindow(window: window, score: score, order: index))
+        }
+        ranked.sort { $0.score == $1.score ? $0.order < $1.order : $0.score > $1.score }
+        filteredWindows = ranked.map(\.window)
+    }
+
+    func refreshWindows() {
+        extendedFetchTask?.cancel()
         searchQuery = ""
         isSearchMode = false
         isSettingsOpen = false
 
-        let showMinimized = PreferencesManager.shared.showMinimizedWindows
-        let showTabs = PreferencesManager.shared.showAppTabs
-        let currentSpaceOnly = PreferencesManager.shared.currentSpaceOnly
-        let activeWindows = WindowManager.shared.fetchActiveWindows(
-            includeMinimized: showMinimized,
-            showTabs: showTabs,
-            currentSpaceOnly: currentSpaceOnly
-        )
-        self.windows = activeWindows
+        let preferences = PreferencesManager.shared
+        let includeMinimized = preferences.showMinimizedWindows
+        let showTabs = preferences.showAppTabs
+        let currentSpaceOnly = preferences.currentSpaceOnly
 
-        // Preload any cached thumbnails instantly
-        var preloaded: [CGWindowID: NSImage] = [:]
-        for window in activeWindows {
-            if let cached = WindowManager.shared.cachedThumbnail(for: window.id) {
-                preloaded[window.id] = cached
-            }
+        let base = WindowManager.shared.fetchOnScreenWindows()
+        apply(windows: base, preferredID: nil)
+
+        guard includeMinimized || showTabs || !currentSpaceOnly else { return }
+
+        let preferredID = selectedWindow?.id
+        extendedFetchTask = Task { [weak self] in
+            let extended = await WindowManager.shared.fetchExtendedWindows(
+                base: base,
+                includeMinimized: includeMinimized,
+                showTabs: showTabs,
+                currentSpaceOnly: currentSpaceOnly
+            )
+            guard !Task.isCancelled, let self, extended.count != base.count else { return }
+            self.apply(windows: extended, preferredID: preferredID)
         }
-        self.thumbnails = preloaded
-
-        // Default selection: switch to the previous app (index 1) if available
-        let initialIndex = activeWindows.count > 1 ? 1 : 0
-        self.selectedIndex = initialIndex
-
-        // Start progressive, streaming thumbnail capture
-        loadThumbnailsProgressively(for: activeWindows, prioritizedIndex: initialIndex)
     }
 
-    private func loadThumbnailsProgressively(for windowList: [WindowInfo], prioritizedIndex: Int) {
-        guard PermissionsManager.shared.hasScreenRecording, !windowList.isEmpty else { return }
+    private func apply(windows newWindows: [WindowInfo], preferredID: CGWindowID?) {
+        windows = newWindows
 
-        var prioritizedIDs = windowList.map(\.id)
-        if prioritizedIndex < prioritizedIDs.count {
-            let prioritized = prioritizedIDs.remove(at: prioritizedIndex)
-            prioritizedIDs.insert(prioritized, at: 0)
+        let liveIDs = Set(newWindows.map(\.id))
+        slots = slots.filter { liveIDs.contains($0.key) }
+        AppIconCache.retain(pids: Set(newWindows.map(\.pid)))
+
+        if let preferredID, let index = filteredWindows.firstIndex(where: { $0.id == preferredID }) {
+            selectedIndex = index
+        } else {
+            selectedIndex = filteredWindows.count > 1 ? 1 : 0
         }
 
+        startThumbnailCapture()
+    }
+
+    private func startThumbnailCapture() {
+        thumbnailTask?.cancel()
+        guard PermissionsManager.shared.hasScreenRecording, !windows.isEmpty else { return }
+
+        let targets = windows
+        let priorityID = selectedWindow?.id
         thumbnailTask = Task { [weak self] in
-            guard let shareable = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else {
-                return
-            }
-            let scWindows = shareable.windows
-            guard !scWindows.isEmpty, !Task.isCancelled else { return }
-
-            var windowMap: [CGWindowID: SCWindow] = [:]
-            for win in scWindows {
-                windowMap[win.windowID] = win
-            }
-
-            for winID in prioritizedIDs {
-                if Task.isCancelled { break }
-                guard let self = self else { break }
-                guard let scWin = windowMap[winID] else { continue }
-
-                if let thumb = await WindowManager.shared.captureThumbnail(for: winID, from: scWin) {
-                    if !Task.isCancelled {
-                        self.thumbnails[winID] = thumb
-                    }
-                }
-
-                // Cooperative pause to avoid CPU/GPU contention with the UI animations
-                try? await Task.sleep(for: .milliseconds(10))
+            await WindowManager.shared.captureThumbnails(for: targets, priorityID: priorityID) { id, image in
+                self?.slot(for: id).image = image
             }
         }
     }
 
-    public func removeWindow(id: CGWindowID) {
-        withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
-            windows.removeAll { $0.id == id }
-            thumbnails.removeValue(forKey: id)
-            let remaining = filteredWindows.count
-            if remaining == 0 {
-                selectedIndex = 0
-            } else if selectedIndex >= remaining {
-                selectedIndex = max(0, remaining - 1)
-            }
-        }
+    func cancelPendingWork() {
+        extendedFetchTask?.cancel()
+        thumbnailTask?.cancel()
+        extendedFetchTask = nil
+        thumbnailTask = nil
     }
 
-    public func selectNext() {
+    func select(id: CGWindowID) {
+        guard let index = filteredWindows.firstIndex(where: { $0.id == id }) else { return }
+        selectedIndex = index
+    }
+
+    func selectNext() {
         let count = filteredWindows.count
         guard count > 0 else { return }
         selectedIndex = (selectedIndex + 1) % count
     }
 
-    public func selectPrevious() {
+    func selectPrevious() {
         let count = filteredWindows.count
         guard count > 0 else { return }
         selectedIndex = (selectedIndex - 1 + count) % count
     }
 
-    public func columnCount(isFullscreen: Bool) -> Int {
-        let count = filteredWindows.count
-        if count <= 2 {
-            return max(1, count)
-        } else if count <= 4 {
-            return min(4, count)
-        } else if count <= 8 {
-            return isFullscreen ? min(5, max(3, count)) : min(4, max(2, (count + 1) / 2))
-        } else if count <= 14 {
-            return isFullscreen ? 6 : 5
-        } else {
-            return isFullscreen ? 7 : 5
-        }
-    }
-
-    public func navigate(direction: HotkeyManager.NavigationDirection, columns: Int) {
+    func navigate(direction: HotkeyManager.NavigationDirection, columns: Int) {
         let count = filteredWindows.count
         guard count > 0 else { return }
 
@@ -157,31 +182,70 @@ public final class SwitcherViewModel: ObservableObject {
             selectNext()
         case .up:
             let target = selectedIndex - columns
-            selectedIndex = target >= 0 ? target : selectedIndex
+            if target >= 0 { selectedIndex = target }
         case .down:
             let target = selectedIndex + columns
-            selectedIndex = target < count ? target : selectedIndex
+            if target < count { selectedIndex = target }
         }
     }
 
-    public func enterSearchMode() {
+    private func mutateWindows(_ mutation: () -> Void) {
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
+            mutation()
+            clampSelection()
+        }
+    }
+
+    func removeWindows(pid: pid_t) {
+        mutateWindows {
+            for window in windows where window.pid == pid {
+                slots.removeValue(forKey: window.id)
+            }
+            windows.removeAll { $0.pid == pid }
+        }
+    }
+
+    func removeWindow(id: CGWindowID) {
+        mutateWindows {
+            windows.removeAll { $0.id == id }
+            slots.removeValue(forKey: id)
+        }
+    }
+
+    private func clampSelection() {
+        let remaining = filteredWindows.count
+        selectedIndex = remaining == 0 ? 0 : min(selectedIndex, remaining - 1)
+    }
+
+    func columnCount(isFullscreen: Bool) -> Int {
+        let count = filteredWindows.count
+        switch count {
+        case ...2: return max(1, count)
+        case ...4: return count
+        case ...8: return isFullscreen ? min(5, count) : min(4, max(2, (count + 1) / 2))
+        case ...14: return isFullscreen ? 6 : 5
+        default: return isFullscreen ? 7 : 5
+        }
+    }
+
+    func enterSearchMode() {
         isSearchMode = true
     }
 
-    public func exitSearchMode() {
+    func exitSearchMode() {
         isSearchMode = false
         searchQuery = ""
     }
 
-    public func openSettings() {
+    func openSettings() {
         isSettingsOpen = true
     }
 
-    public func closeSettings() {
+    func closeSettings() {
         isSettingsOpen = false
     }
 
-    public func toggleSettings() {
+    func toggleSettings() {
         isSettingsOpen.toggle()
     }
 }

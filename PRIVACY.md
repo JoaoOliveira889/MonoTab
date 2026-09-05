@@ -21,13 +21,13 @@ Este documento detalha a arquitetura de segurança e privacidade implementada no
 - **Apple Unified Logging (`os.Logger`)**: Toda a instrumentação do aplicativo utiliza o subsistema oficial de logging da Apple:
   - Registros residem em anéis de memória volátil gerenciados pelo macOS.
   - Dados potencialmente sensíveis (como títulos de janelas e nomes de processos) são mascarados com redação de privacidade (`<private>`).
-  - Logs de depuração são excluídos em compilações de produção (`#if DEBUG`).
+  - Nenhum título de janela, nome de aplicativo, busca ou tecla é enviado ao log do sistema.
 
 ---
 
 ## 3. Miniaturas e Screenshots em Memória RAM
 
-- **Retenção Efêmera na RAM**: As miniaturas geradas pela API nativa `ScreenCaptureKit` são mantidas estritamente na memória volátil (`FastThumbnailCache`).
+- **Retenção Efêmera na RAM**: As miniaturas geradas pela API nativa `ScreenCaptureKit` são mantidas estritamente na memória volátil (`ThumbnailStore`).
 - **Sem Gravação em Cache de Disco**: Nenhuma imagem de janela é salva no disco, em pastas de cache (`~/Library/Caches`) ou em arquivos temporários.
 - **Descarte Imediato**: Quando uma janela é fechada ou quando o MonoTab é encerrado, todos os buffers de imagem são imediatamente liberados da memória.
 - **Isolamento de Janelas**: A captura é restrita à janela individual (`SCContentFilter(desktopIndependentWindow:)`), sem capturar áreas adjacentes da tela ou dados de outros monitores.

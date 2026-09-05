@@ -1,112 +1,127 @@
-import XCTest
+import CoreGraphics
+import Testing
 @testable import MonoTab
 
+@Suite("Switcher navigation")
 @MainActor
-final class NavigationTests: XCTestCase {
-    func testNavigationCycleNextAndPrevious() {
-        let vm = SwitcherViewModel()
-        let windows = [
-            WindowInfo(id: 1, pid: 10, appName: "App A", title: "Win A", bounds: .zero, layer: 0),
-            WindowInfo(id: 2, pid: 20, appName: "App B", title: "Win B", bounds: .zero, layer: 0),
-            WindowInfo(id: 3, pid: 30, appName: "App C", title: "Win C", bounds: .zero, layer: 0)
-        ]
-        vm.windows = windows
-        vm.selectedIndex = 0
-
-        // Select next
-        vm.selectNext()
-        XCTAssertEqual(vm.selectedIndex, 1)
-
-        vm.selectNext()
-        XCTAssertEqual(vm.selectedIndex, 2)
-
-        // Wrap-around to 0
-        vm.selectNext()
-        XCTAssertEqual(vm.selectedIndex, 0)
-
-        // Select previous wrap-around to 2
-        vm.selectPrevious()
-        XCTAssertEqual(vm.selectedIndex, 2)
-
-        vm.selectPrevious()
-        XCTAssertEqual(vm.selectedIndex, 1)
-    }
-
-    func testGridDirectionalNavigation() {
-        let vm = SwitcherViewModel()
-        // 6 windows in a 4-column layout
-        vm.windows = (1...6).map {
-            WindowInfo(id: CGWindowID($0), pid: pid_t($0), appName: "App \($0)", title: "Win \($0)", bounds: .zero, layer: 0)
+struct NavigationTests {
+    private func viewModel(windowCount: Int) -> SwitcherViewModel {
+        let viewModel = SwitcherViewModel()
+        viewModel.windows = (1...windowCount).map {
+            WindowInfo(
+                id: CGWindowID($0),
+                pid: pid_t($0),
+                appName: "App \($0)",
+                title: "Win \($0)",
+                bounds: .zero
+            )
         }
-        vm.selectedIndex = 0
-
-        // Navigate Down with 4 columns: index 0 -> index 4
-        vm.navigate(direction: .down, columns: 4)
-        XCTAssertEqual(vm.selectedIndex, 4)
-
-        // Navigate Right: index 4 -> index 5
-        vm.navigate(direction: .right, columns: 4)
-        XCTAssertEqual(vm.selectedIndex, 5)
-
-        // Navigate Down from 5: target 9 >= 6, stays at 5
-        vm.navigate(direction: .down, columns: 4)
-        XCTAssertEqual(vm.selectedIndex, 5)
-
-        // Navigate Up: index 5 -> index 1
-        vm.navigate(direction: .up, columns: 4)
-        XCTAssertEqual(vm.selectedIndex, 1)
-
-        // Navigate Left: index 1 -> index 0
-        vm.navigate(direction: .left, columns: 4)
-        XCTAssertEqual(vm.selectedIndex, 0)
+        return viewModel
     }
 
-    func testSearchFiltering() {
-        let vm = SwitcherViewModel()
-        vm.windows = [
-            WindowInfo(id: 1, pid: 10, appName: "Terminal", title: "zsh", bounds: .zero, layer: 0),
-            WindowInfo(id: 2, pid: 20, appName: "Slack", title: "general", bounds: .zero, layer: 0),
-            WindowInfo(id: 3, pid: 30, appName: "Safari", title: "Apple Developer", bounds: .zero, layer: 0)
-        ]
+    @Test("Next and previous wrap around the list")
+    func cycling() {
+        let viewModel = viewModel(windowCount: 3)
+        viewModel.selectedIndex = 0
 
-        XCTAssertEqual(vm.filteredWindows.count, 3)
-
-        vm.searchQuery = "slack"
-        XCTAssertEqual(vm.filteredWindows.count, 1)
-        XCTAssertEqual(vm.filteredWindows.first?.appName, "Slack")
-        XCTAssertEqual(vm.selectedIndex, 0)
-
-        vm.searchQuery = "apple"
-        XCTAssertEqual(vm.filteredWindows.count, 1)
-        XCTAssertEqual(vm.filteredWindows.first?.appName, "Safari")
-
-        vm.searchQuery = "nonexistent"
-        XCTAssertEqual(vm.filteredWindows.count, 0)
-        XCTAssertNil(vm.selectedWindow)
+        viewModel.selectNext()
+        #expect(viewModel.selectedIndex == 1)
+        viewModel.selectNext()
+        #expect(viewModel.selectedIndex == 2)
+        viewModel.selectNext()
+        #expect(viewModel.selectedIndex == 0)
+        viewModel.selectPrevious()
+        #expect(viewModel.selectedIndex == 2)
+        viewModel.selectPrevious()
+        #expect(viewModel.selectedIndex == 1)
     }
 
-    func testRemoveWindowAdjustsSelection() {
-        let vm = SwitcherViewModel()
-        vm.windows = [
-            WindowInfo(id: 1, pid: 10, appName: "App 1", title: "Win 1", bounds: .zero, layer: 0),
-            WindowInfo(id: 2, pid: 20, appName: "App 2", title: "Win 2", bounds: .zero, layer: 0),
-            WindowInfo(id: 3, pid: 30, appName: "App 3", title: "Win 3", bounds: .zero, layer: 0)
+    @Test("Grid navigation clamps at the edges")
+    func gridNavigation() {
+        let viewModel = viewModel(windowCount: 6)
+        viewModel.selectedIndex = 0
+
+        viewModel.navigate(direction: .down, columns: 4)
+        #expect(viewModel.selectedIndex == 4)
+
+        viewModel.navigate(direction: .right, columns: 4)
+        #expect(viewModel.selectedIndex == 5)
+
+        viewModel.navigate(direction: .down, columns: 4)
+        #expect(viewModel.selectedIndex == 5)
+
+        viewModel.navigate(direction: .up, columns: 4)
+        #expect(viewModel.selectedIndex == 1)
+
+        viewModel.navigate(direction: .left, columns: 4)
+        #expect(viewModel.selectedIndex == 0)
+    }
+
+    @Test("Search filters the list and resets the selection")
+    func searchFiltering() {
+        let viewModel = SwitcherViewModel()
+        viewModel.windows = [
+            WindowInfo(id: 1, pid: 10, appName: "Terminal", title: "zsh", bounds: .zero),
+            WindowInfo(id: 2, pid: 20, appName: "Slack", title: "general", bounds: .zero),
+            WindowInfo(id: 3, pid: 30, appName: "Safari", title: "Apple Developer", bounds: .zero)
         ]
-        vm.selectedIndex = 2
+        #expect(viewModel.filteredWindows.count == 3)
 
-        // Remove last window (index 2) -> selection should adjust to index 1
-        vm.removeWindow(id: 3)
-        XCTAssertEqual(vm.windows.count, 2)
-        XCTAssertEqual(vm.selectedIndex, 1)
+        viewModel.searchQuery = "slack"
+        #expect(viewModel.filteredWindows.map(\.appName) == ["Slack"])
+        #expect(viewModel.selectedIndex == 0)
 
-        // Remove window in the middle
-        vm.removeWindow(id: 2)
-        XCTAssertEqual(vm.windows.count, 1)
-        XCTAssertEqual(vm.selectedIndex, 0)
+        viewModel.searchQuery = "apple"
+        #expect(viewModel.filteredWindows.map(\.appName) == ["Safari"])
 
-        // Remove last remaining window
-        vm.removeWindow(id: 1)
-        XCTAssertEqual(vm.windows.count, 0)
-        XCTAssertEqual(vm.selectedIndex, 0)
+        viewModel.searchQuery = "nonexistent"
+        #expect(viewModel.filteredWindows.isEmpty)
+        #expect(viewModel.selectedWindow == nil)
+    }
+
+    @Test("Selecting by window id survives reordering")
+    func selectByID() {
+        let viewModel = viewModel(windowCount: 4)
+        viewModel.select(id: 3)
+        #expect(viewModel.selectedWindow?.id == 3)
+
+        viewModel.select(id: 999)
+        #expect(viewModel.selectedWindow?.id == 3)
+    }
+
+    @Test("Removing a window keeps the selection in range")
+    func removalAdjustsSelection() {
+        let viewModel = viewModel(windowCount: 3)
+        viewModel.selectedIndex = 2
+
+        viewModel.removeWindow(id: 3)
+        #expect(viewModel.windows.count == 2)
+        #expect(viewModel.selectedIndex == 1)
+
+        viewModel.removeWindow(id: 2)
+        #expect(viewModel.windows.count == 1)
+        #expect(viewModel.selectedIndex == 0)
+
+        viewModel.removeWindow(id: 1)
+        #expect(viewModel.windows.isEmpty)
+        #expect(viewModel.selectedIndex == 0)
+    }
+
+    @Test("Column count stays within the grid bounds", arguments: [0, 1, 2, 4, 8, 14, 40])
+    func columnCounts(windowCount: Int) {
+        let viewModel = windowCount == 0 ? SwitcherViewModel() : viewModel(windowCount: windowCount)
+
+        for isFullscreen in [true, false] {
+            let columns = viewModel.columnCount(isFullscreen: isFullscreen)
+            #expect(columns >= 1)
+            #expect(columns <= (isFullscreen ? 7 : 5))
+        }
+    }
+
+    @Test("Each window gets a stable thumbnail slot")
+    func thumbnailSlots() {
+        let viewModel = viewModel(windowCount: 2)
+        #expect(viewModel.slot(for: 1) === viewModel.slot(for: 1))
+        #expect(viewModel.slot(for: 1) !== viewModel.slot(for: 2))
     }
 }

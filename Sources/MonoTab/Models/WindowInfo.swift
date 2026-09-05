@@ -1,24 +1,25 @@
-import AppKit
+import CoreGraphics
 import Foundation
 
-public struct WindowInfo: Identifiable, Equatable, Hashable, @unchecked Sendable {
-    public let id: CGWindowID
-    public let pid: pid_t
-    public let appName: String
-    public let title: String
-    public let bounds: CGRect
-    public let layer: Int
-    public let appIcon: NSImage?
-    public let isMinimized: Bool
+struct WindowInfo: Identifiable, Hashable, Sendable {
+    let id: CGWindowID
+    let pid: pid_t
+    let appName: String
+    let title: String
+    let bounds: CGRect
+    let isMinimized: Bool
 
-    public init(
+    private static let appNameWeight = 20
+
+    private let appNameBytes: [UInt8]
+    private let titleBytes: [UInt8]
+
+    init(
         id: CGWindowID,
         pid: pid_t,
         appName: String,
         title: String,
         bounds: CGRect,
-        layer: Int,
-        appIcon: NSImage? = nil,
         isMinimized: Bool = false
     ) {
         self.id = id
@@ -26,30 +27,42 @@ public struct WindowInfo: Identifiable, Equatable, Hashable, @unchecked Sendable
         self.appName = appName
         self.title = title
         self.bounds = bounds
-        self.layer = layer
-        self.appIcon = appIcon
         self.isMinimized = isMinimized
+        self.appNameBytes = Array(appName.lowercased().utf8)
+        self.titleBytes = Array(title.lowercased().utf8)
     }
 
-    public var displayTitle: String {
-        if !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return title
+    var displayTitle: String {
+        title.allSatisfy(\.isWhitespace) ? appName : title
+    }
+
+    func matchScore(normalizedQuery query: [UInt8]) -> Int? {
+        guard !query.isEmpty else { return 0 }
+
+        let appScore = FuzzyMatch.score(query: query, candidate: appNameBytes).map { $0 + Self.appNameWeight }
+        let titleScore = FuzzyMatch.score(query: query, candidate: titleBytes)
+
+        switch (appScore, titleScore) {
+        case let (app?, title?): return max(app, title)
+        case let (app?, nil): return app
+        case let (nil, title?): return title
+        case (nil, nil): return nil
         }
-        return appName
     }
 
-    public func matches(query: String) -> Bool {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return true }
-        return appName.localizedCaseInsensitiveContains(trimmed) ||
-               title.localizedCaseInsensitiveContains(trimmed)
+    func matches(query: String) -> Bool {
+        matchScore(normalizedQuery: WindowInfo.normalize(query)) != nil
     }
 
-    public static func == (lhs: WindowInfo, rhs: WindowInfo) -> Bool {
+    static func normalize(_ query: String) -> [UInt8] {
+        Array(query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().utf8)
+    }
+
+    static func == (lhs: WindowInfo, rhs: WindowInfo) -> Bool {
         lhs.id == rhs.id
     }
 
-    public func hash(into hasher: inout Hasher) {
+    func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
 }

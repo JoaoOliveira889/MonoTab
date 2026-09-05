@@ -1,128 +1,134 @@
-import Combine
 import Foundation
+import Observation
 import ServiceManagement
 
-public enum ShortcutPreference: String, CaseIterable, Identifiable {
-    case optionTab = "optionTab"
-    case commandTab = "commandTab"
-    case both = "both"
+enum ShortcutPreference: String, CaseIterable, Identifiable, Sendable {
+    case optionTab
+    case commandTab
+    case both
 
-    public var id: String { rawValue }
+    var id: String { rawValue }
 
-    public var displayName: String {
+    var displayName: String {
         switch self {
-        case .optionTab: return "⌥ Option + Tab"
-        case .commandTab: return "⌘ Command + Tab"
-        case .both: return "Both (⌥ & ⌘)"
+        case .optionTab: "⌥ Option + Tab"
+        case .commandTab: "⌘ Command + Tab"
+        case .both: "Both (⌥ & ⌘)"
         }
     }
 
-    public var shortName: String {
+    var shortName: String {
         switch self {
-        case .optionTab: return "⌥ Tab"
-        case .commandTab: return "⌘ Tab"
-        case .both: return "Both"
+        case .optionTab: "⌥ Tab"
+        case .commandTab: "⌘ Tab"
+        case .both: "Both"
         }
     }
 
-    public var hint: String {
+    var hint: String {
         switch self {
-        case .optionTab: return "Classic MonoTab shortcut without system interference."
-        case .commandTab: return "Replaces the default macOS application switcher."
-        case .both: return "Allows using both ⌥ Tab and ⌘ Tab to switch windows."
+        case .optionTab: "Classic MonoTab shortcut without system interference."
+        case .commandTab: "Replaces the default macOS application switcher."
+        case .both: "Allows using both ⌥ Tab and ⌘ Tab to switch windows."
         }
     }
 }
 
-public enum DisplayModePreference: String, CaseIterable, Identifiable {
-    case compact = "compact"
-    case fullscreen = "fullscreen"
+enum DisplayModePreference: String, CaseIterable, Identifiable, Sendable {
+    case compact
+    case fullscreen
 
-    public var id: String { rawValue }
+    var id: String { rawValue }
 
-    public var displayName: String {
+    var displayName: String {
         switch self {
-        case .compact: return "Floating"
-        case .fullscreen: return "Fullscreen"
+        case .compact: "Floating"
+        case .fullscreen: "Fullscreen"
         }
     }
 }
 
 @MainActor
-public final class PreferencesManager: ObservableObject {
-    public static let shared = PreferencesManager()
+@Observable
+final class PreferencesManager {
+    static let shared = PreferencesManager()
 
-    private let kShortcutKey = "monotab_shortcut_preference"
-    private let kDisplayModeKey = "monotab_display_mode"
-    private let kShowMinimizedKey = "monotab_show_minimized"
-    private let kShowAppTabsKey = "monotab_show_app_tabs"
-    private let kCurrentSpaceOnlyKey = "monotab_current_space_only"
+    private enum Key {
+        static let shortcut = "monotab_shortcut_preference"
+        static let displayMode = "monotab_display_mode"
+        static let showMinimized = "monotab_show_minimized"
+        static let showAppTabs = "monotab_show_app_tabs"
+        static let currentSpaceOnly = "monotab_current_space_only"
+        static let showMenuBarIcon = "monotab_show_menu_bar_icon"
+    }
 
-    @Published public var shortcut: ShortcutPreference {
+    var shortcut: ShortcutPreference {
         didSet {
-            UserDefaults.standard.set(shortcut.rawValue, forKey: kShortcutKey)
+            guard shortcut != oldValue else { return }
+            UserDefaults.standard.set(shortcut.rawValue, forKey: Key.shortcut)
+            HotkeyManager.shared.setShortcutPreference(shortcut)
         }
     }
 
-    @Published public var displayMode: DisplayModePreference {
+    var displayMode: DisplayModePreference {
         didSet {
-            UserDefaults.standard.set(displayMode.rawValue, forKey: kDisplayModeKey)
+            guard displayMode != oldValue else { return }
+            UserDefaults.standard.set(displayMode.rawValue, forKey: Key.displayMode)
         }
     }
 
-    @Published public var showMinimizedWindows: Bool {
+    var showMinimizedWindows: Bool {
+        didSet { UserDefaults.standard.set(showMinimizedWindows, forKey: Key.showMinimized) }
+    }
+
+    var showAppTabs: Bool {
+        didSet { UserDefaults.standard.set(showAppTabs, forKey: Key.showAppTabs) }
+    }
+
+    var currentSpaceOnly: Bool {
+        didSet { UserDefaults.standard.set(currentSpaceOnly, forKey: Key.currentSpaceOnly) }
+    }
+
+    var showMenuBarIcon: Bool {
         didSet {
-            UserDefaults.standard.set(showMinimizedWindows, forKey: kShowMinimizedKey)
+            guard showMenuBarIcon != oldValue else { return }
+            UserDefaults.standard.set(showMenuBarIcon, forKey: Key.showMenuBarIcon)
+            StatusItemController.shared.setVisible(showMenuBarIcon)
         }
     }
 
-    @Published public var showAppTabs: Bool {
+    var launchAtLogin: Bool {
         didSet {
-            UserDefaults.standard.set(showAppTabs, forKey: kShowAppTabsKey)
-        }
-    }
-
-    @Published public var currentSpaceOnly: Bool {
-        didSet {
-            UserDefaults.standard.set(currentSpaceOnly, forKey: kCurrentSpaceOnlyKey)
-        }
-    }
-
-    public var launchAtLogin: Bool {
-        get {
-            SMAppService.mainApp.status == .enabled
-        }
-        set {
-            objectWillChange.send()
+            guard !isRevertingLaunchAtLogin, launchAtLogin != oldValue else { return }
             do {
-                if newValue {
-                    if SMAppService.mainApp.status != .enabled {
-                        try SMAppService.mainApp.register()
-                    }
+                if launchAtLogin {
+                    if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
                 } else {
-                    if SMAppService.mainApp.status == .enabled {
-                        try SMAppService.mainApp.unregister()
-                    }
+                    if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
                 }
             } catch {
-                AppLogger.error("Error configuring launch at login: \(error)")
+                AppLogger.error("Failed to update launch at login: \(error.localizedDescription)")
+                isRevertingLaunchAtLogin = true
+                launchAtLogin = oldValue
+                isRevertingLaunchAtLogin = false
             }
         }
     }
 
+    @ObservationIgnored private var isRevertingLaunchAtLogin = false
+
     private init() {
-        let savedShortcut = UserDefaults.standard.string(forKey: kShortcutKey) ?? ShortcutPreference.both.rawValue
-        self.shortcut = ShortcutPreference(rawValue: savedShortcut) ?? .both
-
-        let savedDisplayMode = UserDefaults.standard.string(forKey: kDisplayModeKey) ?? DisplayModePreference.compact.rawValue
-        self.displayMode = DisplayModePreference(rawValue: savedDisplayMode) ?? .compact
-
-        self.showMinimizedWindows = UserDefaults.standard.bool(forKey: kShowMinimizedKey)
-        self.showAppTabs = UserDefaults.standard.bool(forKey: kShowAppTabsKey)
-        self.currentSpaceOnly = UserDefaults.standard.object(forKey: kCurrentSpaceOnlyKey) as? Bool ?? true
+        let defaults = UserDefaults.standard
+        shortcut = defaults.string(forKey: Key.shortcut).flatMap(ShortcutPreference.init) ?? .both
+        displayMode = defaults.string(forKey: Key.displayMode).flatMap(DisplayModePreference.init) ?? .compact
+        showMinimizedWindows = defaults.bool(forKey: Key.showMinimized)
+        showAppTabs = defaults.bool(forKey: Key.showAppTabs)
+        currentSpaceOnly = defaults.object(forKey: Key.currentSpaceOnly) as? Bool ?? true
+        showMenuBarIcon = defaults.object(forKey: Key.showMenuBarIcon) as? Bool ?? true
+        launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
-    public func toggleDisplayMode() {
-        displayMode = (displayMode == .compact) ? .fullscreen : .compact
+    func toggleDisplayMode() {
+        displayMode = displayMode == .compact ? .fullscreen : .compact
     }
 }

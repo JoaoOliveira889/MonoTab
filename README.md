@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/JoaoOliveira889/MonoTab/releases"><img src="https://img.shields.io/badge/version-v1.2.0-brightgreen" alt="Version v1.2.0" /></a>
   <a href="https://apple.com/macos"><img src="https://img.shields.io/badge/macOS-26.0%2B-blue?logo=apple" alt="macOS 26+" /></a>
   <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-6.0%2B-orange?logo=swift" alt="Swift 6.0+" /></a>
   <img src="https://img.shields.io/badge/Architecture-Apple%20Silicon%20(arm64)%20Only-purple" alt="Apple Silicon (arm64) Only" />
@@ -39,9 +40,9 @@ Free and open-source software under the **MIT License**.
   - Transparent backdrop preserving visibility of your underlying wallpaper and workspaces.
   - Mathematically centered layout with dual-layer optical refraction, dynamic ambient blur, and specular rim lighting.
 - **ScreenCaptureKit Hardware Acceleration**:
-  - Captured directly at target card resolution (460x280) using Apple Silicon media decoders without allocating large 4K/5K textures.
+  - Captured directly at card resolution, sized per window to its own aspect ratio (bounded by 560x352), using Apple Silicon media decoders without allocating large 4K/5K textures.
   - Parallel background capture across CPU/GPU cores using asynchronous Swift tasks.
-- **0ms Perceived Latency (`FastThumbnailCache`)**:
+- **0ms Perceived Latency (`ThumbnailStore`)**:
   - In-memory ephemeral cache displays previews from prior switching sessions instantly upon pressing the hotkey.
   - Strictly RAM-only; closed windows are automatically purged from memory.
 - **Flexible Shortcut Activation (`⌥ Tab` & `⌘ Tab`)**:
@@ -51,6 +52,12 @@ Free and open-source software under the **MIT License**.
   - Press `f` or `/` during navigation to open search immediately.
   - Releasing modifier keys (⌥ / ⌘) in search mode **keeps MonoTab open**, allowing natural two-handed typing.
   - Press `Escape` to clear search or exit; press `Enter` to focus the matched window.
+- **Menu Bar Item**:
+  - Reaches Preferences and Quit even when the Accessibility permission that powers the hotkey is missing. Can be hidden from Preferences.
+- **Fuzzy Search**:
+  - Subsequence matching with scoring — `vsc` finds `Visual Studio Code`. Results are ranked, so the best match sits under the initial selection.
+- **Quit an App (`⌘Q`)**:
+  - Sends the standard Quit Apple Event to the selected window's application, so it still gets to prompt about unsaved work.
 - **Instant Window Close (`w`)**:
   - Close background or active windows directly from the switcher grid using the `w` key or the hover close button (`×`), without needing to switch to the window first.
 - **Launch at Login**:
@@ -145,6 +152,7 @@ When MonoTab opens for the first time, a setup banner will guide you to enable e
 | **`⇧ + ⇥`** *(Shift + Tab)* | Switcher visible | Cycle to previous window |
 | **Release `⌥` / `⌘`** | Switcher visible | Confirm selection and focus window immediately |
 | **`w`** | Switcher visible | Close selected window via Accessibility API |
+| **`⌘ Q`** | Switcher visible | Quit selected application via Apple Event |
 | **`f`** or **`/`** | Switcher visible | Enter Search Mode (keeps window open without holding keys) |
 | **`↑ ↓ ← →`** | Switcher visible | Navigate window grid |
 | **`h j k l`** | Switcher visible | Vim navigation (Left, Down, Up, Right) |
@@ -159,7 +167,7 @@ When MonoTab opens for the first time, a setup banner will guide you to enable e
 Explore the detailed architecture, security audit, and permission references:
 
 - [Architecture & Technical Design](docs/ARCHITECTURE.md): Pipeline breakdown of ScreenCaptureKit, CGEventTap, and in-memory caching.
-- [Security & Privacy Audit Report](docs/SECURITY.md): Reproducible commands to verify zero network symbols, sandbox entitlements, and socket absence.
+- [Security & Privacy Audit Report](docs/SECURITY.md): Reproducible commands to verify zero network symbols, hardened runtime flags, entitlements, and socket absence.
 - [Privacy Manifesto (Português)](PRIVACY.md): Termo de compromisso de privacidade e auditoria local.
 - [Permissions Troubleshooting](docs/PERMISSIONS.md): Diagnostic guide for macOS Accessibility and Screen Recording permissions.
 

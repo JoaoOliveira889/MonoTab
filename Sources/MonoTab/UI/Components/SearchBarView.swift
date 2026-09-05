@@ -1,12 +1,12 @@
 import SwiftUI
 
-public struct SearchBarView: View {
+struct SearchBarView: View {
     @Binding var text: String
     @Binding var isSearchMode: Bool
     let onExit: () -> Void
     @FocusState private var isFocused: Bool
 
-    public init(
+    init(
         text: Binding<String>,
         isSearchMode: Binding<Bool>,
         onExit: @escaping () -> Void
@@ -16,7 +16,7 @@ public struct SearchBarView: View {
         self.onExit = onExit
     }
 
-    public var body: some View {
+    var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundColor(isFocused ? .accentColor : .secondary)
@@ -42,20 +42,14 @@ public struct SearchBarView: View {
             }
 
             Button(action: onExit) {
-                Text("Esc")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.white.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .foregroundColor(.secondary)
+                KeyCap("Esc")
             }
             .buttonStyle(.plain)
             .help("Exit search mode (Esc)")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .liquidGlassSearchBar(isFocused: isFocused)
+        .glassField(isFocused: isFocused)
         .onAppear {
             if isSearchMode {
                 isFocused = true

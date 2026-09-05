@@ -1,357 +1,262 @@
 import AppKit
 import ApplicationServices
-import Foundation
+import Synchronization
 
 @MainActor
-public protocol HotkeyManagerDelegate: AnyObject {
+protocol HotkeyManagerDelegate: AnyObject {
     func hotkeyDidTriggerOpen()
     func hotkeyDidCycleNext()
     func hotkeyDidCyclePrevious()
-    func hotkeyDidReleaseModifier()
     func hotkeyDidConfirm()
     func hotkeyDidCancel()
     func hotkeyDidNavigate(direction: HotkeyManager.NavigationDirection)
     func hotkeyDidEnterSearchMode()
     func hotkeyDidCloseSelectedWindow()
+    func hotkeyDidQuitSelectedApp()
 }
 
-public final class HotkeyManager: @unchecked Sendable {
-    public enum NavigationDirection: Sendable {
+final class HotkeyManager: Sendable {
+    enum NavigationDirection: Sendable {
         case left, right, up, down
     }
 
-    private enum ActiveTriggerModifier {
+    private enum TriggerModifier: Sendable {
         case option
         case command
     }
 
-    public static let shared = HotkeyManager()
+    private enum KeyCode {
+        static let tab: Int64 = 48
+        static let returnKey: Int64 = 36
+        static let keypadEnter: Int64 = 76
+        static let escape: Int64 = 53
+        static let w: Int64 = 13
+        static let q: Int64 = 12
+        static let f: Int64 = 3
+        static let slash: Int64 = 44
+        static let h: Int64 = 4
+        static let j: Int64 = 38
+        static let k: Int64 = 40
+        static let l: Int64 = 37
+        static let arrowLeft: Int64 = 123
+        static let arrowRight: Int64 = 124
+        static let arrowDown: Int64 = 125
+        static let arrowUp: Int64 = 126
+    }
 
-    public weak var delegate: HotkeyManagerDelegate?
+    private struct State {
+        var isOverlayVisible = false
+        var isSearchMode = false
+        var isSettingsOpen = false
+        var shortcut: ShortcutPreference = .both
+        var activeModifier: TriggerModifier?
+    }
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
-    private var fallbackGlobalMonitor: Any?
+    static let shared = HotkeyManager()
 
-    private var isOverlayVisibleState: Bool = false
-    private var isSearchModeState: Bool = false
-    private var isSettingsOpenState: Bool = false
-    private var currentShortcutMode: ShortcutPreference = .both
-    private var activeModifier: ActiveTriggerModifier? = nil
-    private let stateLock = NSLock()
+    @MainActor weak var delegate: (any HotkeyManagerDelegate)?
+    @MainActor private var eventTap: CFMachPort?
+    @MainActor private var runLoopSource: CFRunLoopSource?
+
+    private let state = Mutex(State())
 
     private init() {}
 
-    public func updateOverlayState(isVisible: Bool, isSearchMode: Bool = false, isSettingsOpen: Bool = false) {
-        stateLock.lock()
-        self.isOverlayVisibleState = isVisible
-        self.isSearchModeState = isSearchMode
-        self.isSettingsOpenState = isSettingsOpen
-        if !isVisible {
-            self.activeModifier = nil
-        }
-        stateLock.unlock()
-    }
-
-    public func setShortcutPreference(_ pref: ShortcutPreference) {
-        stateLock.lock()
-        self.currentShortcutMode = pref
-        stateLock.unlock()
-    }
-
-    private var shortcutMode: ShortcutPreference {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return currentShortcutMode
-    }
-
-    public func start() -> Bool {
+    @MainActor
+    func start() -> Bool {
         stop()
 
         let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue) |
                                      (1 << CGEventType.flagsChanged.rawValue)
-
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: eventMask,
-            callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
-                guard let refcon = refcon else { return Unmanaged.passRetained(event) }
-                let manager = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
-                return manager.handleEvent(proxy: proxy, type: type, event: event)
+            callback: { _, type, event, refcon in
+                guard let refcon else { return Unmanaged.passRetained(event) }
+                return Unmanaged<HotkeyManager>.fromOpaque(refcon)
+                    .takeUnretainedValue()
+                    .handleEvent(type: type, event: event)
             },
-            userInfo: selfPtr
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            // Event tap creation failed (usually missing Accessibility permission)
-            // Install passive global monitor as fallback so the app isn't completely unresponsive
-            installFallbackMonitor()
             return false
         }
 
-        // Tap succeeded: remove any fallback monitor to prevent double-firing
-        removeFallbackMonitor()
-
-        self.eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        self.runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
 
+        eventTap = tap
+        runLoopSource = source
         return true
     }
 
-    private func installFallbackMonitor() {
-        guard fallbackGlobalMonitor == nil else { return }
-        fallbackGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard let self = self else { return }
-            if event.keyCode == 48 { // Tab key
-                let flags = event.modifierFlags
-                let isOption = flags.contains(.option)
-                let isCommand = flags.contains(.command)
-                let currentMode = self.shortcutMode
+    @MainActor
+    func stop() {
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+        }
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+        eventTap = nil
+        runLoopSource = nil
+    }
 
-                var matched = false
-                if isOption && (currentMode == .optionTab || currentMode == .both) {
-                    matched = true
-                } else if isCommand && (currentMode == .commandTab || currentMode == .both) {
-                    matched = true
-                }
-
-                if matched {
-                    DispatchQueue.main.async {
-                        if !SwitcherPanelController.shared.isVisible {
-                            SwitcherPanelController.shared.show()
-                        } else {
-                            if flags.contains(.shift) {
-                                SwitcherPanelController.shared.viewModel.selectPrevious()
-                            } else {
-                                SwitcherPanelController.shared.viewModel.selectNext()
-                            }
-                        }
-                    }
-                }
-            }
+    func updateOverlayState(isVisible: Bool, isSearchMode: Bool, isSettingsOpen: Bool) {
+        state.withLock {
+            $0.isOverlayVisible = isVisible
+            $0.isSearchMode = isSearchMode
+            $0.isSettingsOpen = isSettingsOpen
+            if !isVisible { $0.activeModifier = nil }
         }
     }
 
-    private func removeFallbackMonitor() {
-        if let mon = fallbackGlobalMonitor {
-            NSEvent.removeMonitor(mon)
-            fallbackGlobalMonitor = nil
+    func setShortcutPreference(_ preference: ShortcutPreference) {
+        state.withLock { $0.shortcut = preference }
+    }
+
+    private func onMain(_ body: @escaping @Sendable @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(body)
+        } else {
+            DispatchQueue.main.async { MainActor.assumeIsolated(body) }
         }
     }
 
-    public func stop() {
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            if let source = runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-            }
-            eventTap = nil
-            runLoopSource = nil
-        }
-        removeFallbackMonitor()
-    }
-
-    private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // Automatically re-enable tap if system disabled it due to temporary timeout
+    private func handleEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = eventTap {
-                CGEvent.tapEnable(tap: tap, enable: true)
+            onMain { [self] in
+                if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
             }
             return Unmanaged.passRetained(event)
         }
 
-        stateLock.lock()
-        let visible = isOverlayVisibleState
-        let inSearchMode = isSearchModeState
-        let inSettings = isSettingsOpenState
-        let currentMode = currentShortcutMode
-        stateLock.unlock()
+        let snapshot = state.withLock { $0 }
 
-        // 1. Modifier release handling (confirms selection when user releases Option / Command)
-        if type == .flagsChanged {
-            let flags = event.flags
-            let optionDown = flags.contains(.maskAlternate)
-            let commandDown = flags.contains(.maskCommand)
+        switch type {
+        case .flagsChanged:
+            return handleFlagsChanged(event, snapshot)
+        case .keyDown:
+            return handleKeyDown(event, snapshot)
+        default:
+            return Unmanaged.passRetained(event)
+        }
+    }
 
-            stateLock.lock()
-            let trigger = self.activeModifier
-            stateLock.unlock()
+    private func handleFlagsChanged(_ event: CGEvent, _ snapshot: State) -> Unmanaged<CGEvent>? {
+        let flags = event.flags
+        let released: Bool
+        switch snapshot.activeModifier {
+        case .option: released = !flags.contains(.maskAlternate)
+        case .command: released = !flags.contains(.maskCommand)
+        case nil: released = false
+        }
+        guard released else { return Unmanaged.passRetained(event) }
 
-            var modifierReleased = false
-            if trigger == .option && !optionDown {
-                modifierReleased = true
-            } else if trigger == .command && !commandDown {
-                modifierReleased = true
-            }
+        state.withLock { $0.activeModifier = nil }
 
-            if modifierReleased {
-                stateLock.lock()
-                self.activeModifier = nil
-                stateLock.unlock()
-
-                let keepOpen = inSearchMode || inSettings
-                if visible && !keepOpen {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.hotkeyDidReleaseModifier()
-                    }
-                    return nil
-                }
-            }
+        guard snapshot.isOverlayVisible, !snapshot.isSearchMode, !snapshot.isSettingsOpen else {
             return Unmanaged.passRetained(event)
         }
 
-        // 2. Key down handling
-        if type == .keyDown {
-            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-            let flags = event.flags
-            let optionDown = flags.contains(.maskAlternate)
-            let commandDown = flags.contains(.maskCommand)
-            let shiftDown = flags.contains(.maskShift)
+        onMain { [self] in delegate?.hotkeyDidConfirm() }
+        return nil
+    }
 
-            // Tab key (KeyCode 48)
-            if keyCode == 48 {
-                var isShortcutTriggered = false
-                var detectedModifier: ActiveTriggerModifier? = nil
+    private func handleKeyDown(_ event: CGEvent, _ snapshot: State) -> Unmanaged<CGEvent>? {
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        let flags = event.flags
+        let shiftDown = flags.contains(.maskShift)
+        let mode = snapshot.shortcut
 
-                if optionDown && (currentMode == .optionTab || currentMode == .both) {
-                    isShortcutTriggered = true
-                    detectedModifier = .option
-                } else if commandDown && (currentMode == .commandTab || currentMode == .both) {
-                    isShortcutTriggered = true
-                    detectedModifier = .command
-                }
-
-                if isShortcutTriggered {
-                    stateLock.lock()
-                    self.activeModifier = detectedModifier
-                    self.isOverlayVisibleState = true
-                    stateLock.unlock()
-
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        if !visible {
-                            self.delegate?.hotkeyDidTriggerOpen()
-                        } else {
-                            if shiftDown {
-                                self.delegate?.hotkeyDidCyclePrevious()
-                            } else {
-                                self.delegate?.hotkeyDidCycleNext()
-                            }
-                        }
-                    }
-                    return nil
-                } else if visible {
-                    // While overlay is open, plain Tab / Shift+Tab cycles windows
-                    DispatchQueue.main.async { [weak self] in
-                        if shiftDown {
-                            self?.delegate?.hotkeyDidCyclePrevious()
-                        } else {
-                            self?.delegate?.hotkeyDidCycleNext()
-                        }
-                    }
-                    return nil
-                }
+        if keyCode == KeyCode.tab {
+            let trigger: TriggerModifier?
+            if flags.contains(.maskAlternate), mode == .optionTab || mode == .both {
+                trigger = .option
+            } else if flags.contains(.maskCommand), mode == .commandTab || mode == .both {
+                trigger = .command
+            } else {
+                trigger = nil
             }
 
-            // Controls when overlay is visible
-            if visible {
-                // Return / Enter (36, 76)
-                if keyCode == 36 || keyCode == 76 {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.hotkeyDidConfirm()
-                    }
-                    return nil
-                }
-
-                // Escape (53)
-                if keyCode == 53 {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.hotkeyDidCancel()
-                    }
-                    return nil
-                }
-
-                // Close selected window: 'w' (13) when not in search or settings mode
-                if !inSearchMode && !inSettings && keyCode == 13 {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.hotkeyDidCloseSelectedWindow()
-                    }
-                    return nil
-                }
-
-                // Search mode trigger: 'f' (3) or '/' (44) and Vim navigation (h, j, k, l) when not in search or settings mode
-                if !inSearchMode && !inSettings {
-                    if keyCode == 3 || keyCode == 44 {
-                        DispatchQueue.main.async { [weak self] in
-                            self?.delegate?.hotkeyDidEnterSearchMode()
-                        }
-                        return nil
-                    }
-
-                    switch keyCode {
-                    case 4: // 'h' -> Left
-                        DispatchQueue.main.async { [weak self] in
-                            self?.delegate?.hotkeyDidNavigate(direction: .left)
-                        }
-                        return nil
-                    case 38: // 'j' -> Down
-                        DispatchQueue.main.async { [weak self] in
-                            self?.delegate?.hotkeyDidNavigate(direction: .down)
-                        }
-                        return nil
-                    case 40: // 'k' -> Up
-                        DispatchQueue.main.async { [weak self] in
-                            self?.delegate?.hotkeyDidNavigate(direction: .up)
-                        }
-                        return nil
-                    case 37: // 'l' -> Right
-                        DispatchQueue.main.async { [weak self] in
-                            self?.delegate?.hotkeyDidNavigate(direction: .right)
-                        }
-                        return nil
-                    default:
-                        break
+            if let trigger {
+                state.withLock { $0.activeModifier = trigger }
+                let wasVisible = snapshot.isOverlayVisible
+                onMain { [self] in
+                    if wasVisible {
+                        shiftDown ? delegate?.hotkeyDidCyclePrevious() : delegate?.hotkeyDidCycleNext()
+                    } else {
+                        delegate?.hotkeyDidTriggerOpen()
                     }
                 }
+                return nil
+            }
 
-                // Arrow keys navigation
-                switch keyCode {
-                case 123: // Left
-                    if !inSearchMode {
-                        DispatchQueue.main.async { [weak self] in
-                            self?.delegate?.hotkeyDidNavigate(direction: .left)
-                        }
-                        return nil
-                    }
-                case 124: // Right
-                    if !inSearchMode {
-                        DispatchQueue.main.async { [weak self] in
-                            self?.delegate?.hotkeyDidNavigate(direction: .right)
-                        }
-                        return nil
-                    }
-                case 126: // Up
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.hotkeyDidNavigate(direction: .up)
-                    }
-                    return nil
-                case 125: // Down
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.hotkeyDidNavigate(direction: .down)
-                    }
-                    return nil
-                default:
-                    break
+            if snapshot.isOverlayVisible {
+                onMain { [self] in
+                    shiftDown ? delegate?.hotkeyDidCyclePrevious() : delegate?.hotkeyDidCycleNext()
                 }
+                return nil
             }
         }
 
-        // Pass all other keys directly to the system untouched (Zero Keylogger Guarantee)
-        return Unmanaged.passRetained(event)
+        guard snapshot.isOverlayVisible else { return Unmanaged.passRetained(event) }
+
+        switch keyCode {
+        case KeyCode.returnKey, KeyCode.keypadEnter:
+            onMain { [self] in delegate?.hotkeyDidConfirm() }
+            return nil
+        case KeyCode.escape:
+            onMain { [self] in delegate?.hotkeyDidCancel() }
+            return nil
+        case KeyCode.arrowUp:
+            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .up) }
+            return nil
+        case KeyCode.arrowDown:
+            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .down) }
+            return nil
+        case KeyCode.arrowLeft where !snapshot.isSearchMode:
+            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .left) }
+            return nil
+        case KeyCode.arrowRight where !snapshot.isSearchMode:
+            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .right) }
+            return nil
+        default:
+            break
+        }
+
+        guard !snapshot.isSearchMode, !snapshot.isSettingsOpen else {
+            return Unmanaged.passRetained(event)
+        }
+
+        switch keyCode {
+        case KeyCode.q where flags.contains(.maskCommand):
+            onMain { [self] in delegate?.hotkeyDidQuitSelectedApp() }
+            return nil
+        case KeyCode.w:
+            onMain { [self] in delegate?.hotkeyDidCloseSelectedWindow() }
+            return nil
+        case KeyCode.f, KeyCode.slash:
+            onMain { [self] in delegate?.hotkeyDidEnterSearchMode() }
+            return nil
+        case KeyCode.h:
+            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .left) }
+            return nil
+        case KeyCode.j:
+            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .down) }
+            return nil
+        case KeyCode.k:
+            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .up) }
+            return nil
+        case KeyCode.l:
+            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .right) }
+            return nil
+        default:
+            return Unmanaged.passRetained(event)
+        }
     }
 }

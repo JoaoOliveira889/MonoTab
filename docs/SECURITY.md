@@ -13,7 +13,7 @@ This document summarizes the comprehensive security review conducted on the Mono
 - **Entitlements**: `Resources/Entitlements.plist` explicitly omits both:
   - `com.apple.security.network.client`
   - `com.apple.security.network.server`
-- **Sandbox Guarantee**: Even if an unauthorized network call were injected into the binary, the macOS Hardened Runtime kernel sandbox blocks all outbound socket creation.
+- **Hardened Runtime**: The bundle is signed with `--options=runtime`, so code injection, unsigned executable memory and debugger attachment are refused by the kernel. Note that MonoTab is intentionally **not** App Sandboxed — the sandbox is incompatible with the Accessibility and cross-application screen capture the switcher depends on — so the omitted network entitlements document intent rather than being kernel-enforced. The guarantee that no traffic leaves the machine rests on there being no networking code in the binary, which the commands below verify directly.
 
 ### 2. Telemetry, Tracking & Analytics (None)
 - **External Dependencies**: `Package.swift` has `dependencies: []`.
@@ -27,13 +27,13 @@ This document summarizes the comprehensive security review conducted on the Mono
 
 ### 4. Ephemeral Thumbnails (RAM-Only)
 - **ScreenCaptureKit Scoping**: Screen captures are restricted to single target windows via `SCContentFilter(desktopIndependentWindow: scWindow)`. Full screen wallpaper and other windows are not captured.
-- **RAM Storage**: Captured bitmaps reside strictly in `FastThumbnailCache` in memory.
+- **RAM Storage**: Captured `CGImage`s reside strictly in `WindowManager.ThumbnailStore` in memory, behind a `Synchronization.Mutex`, capped at 48 entries.
 - **Zero Disk Caching**: Images are never saved to disk (`/tmp`, `~/Library/Caches`, or `UserDefaults`).
 - **Memory Purging**: Closed windows are evicted immediately when the window list updates.
 
 ### 5. Disk Logging Elimination
 - **No File Logging**: All legacy file logs (`/tmp/MonoTab.log`) have been removed.
-- **Apple Unified Logging**: The application uses `os.Logger`. Sensitive titles and parameters use private redaction (`<private>`). Debug statements are compiled only under `#if DEBUG` builds.
+- **Apple Unified Logging**: The application uses `os.Logger` for a single error channel. Window titles, application names, search queries and keystrokes are never passed to it — the only messages logged are `SMAppService` failures.
 
 ---
 
@@ -62,7 +62,13 @@ lsof -i -a -p $(pgrep MonoTab)
 # Expected output: empty (no network descriptors)
 ```
 
-### 4. Verify Absence of Disk Log Files
+### 4. Confirm Hardened Runtime Is Active
+```bash
+codesign -dv /Applications/MonoTab.app 2>&1 | grep flags
+# Expected output: CodeDirectory ... flags=0x10000(runtime)
+```
+
+### 5. Verify Absence of Disk Log Files
 ```bash
 ls -la /tmp/MonoTab.log
 # Expected output: No such file or directory

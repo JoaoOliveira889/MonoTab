@@ -1,492 +1,469 @@
 import AppKit
 import ApplicationServices
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
+import Synchronization
 
-public final class WindowManager: @unchecked Sendable {
-    public static let shared = WindowManager()
+@_silgen_name("_AXUIElementGetWindow")
+private func axWindowID(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
-    /// Thread-safe in-memory cache for window thumbnails.
-    /// Strictly RAM-only; zero disk caching for absolute privacy.
-    private final class FastThumbnailCache: @unchecked Sendable {
-        private var storage: [CGWindowID: (image: NSImage, date: Date)] = [:]
-        private let lock = NSLock()
+final class WindowManager: Sendable {
+    static let shared = WindowManager()
 
-        func get(for id: CGWindowID) -> NSImage? {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage[id]?.image
-        }
+    private static let axMessagingTimeout: Float = 0.05
+    private static let axActionTimeout: Float = 0.5
+    private static let thumbnailCacheLimit = 48
+    private static let maxConcurrentCaptures = 4
+    private static let browserNames = ["safari", "chrome", "arc", "firefox", "brave", "edge"]
 
-        func set(_ image: NSImage, for id: CGWindowID) {
-            lock.lock()
-            storage[id] = (image, Date())
-            if storage.count > 60 {
-                let oldestKeys = storage.sorted { $0.value.date < $1.value.date }.prefix(20).map(\.key)
-                for key in oldestKeys { storage.removeValue(forKey: key) }
-            }
-            lock.unlock()
-        }
-
-        /// Purges closed windows from RAM
-        func purgeMissing(existingIDs: Set<CGWindowID>) {
-            lock.lock()
-            defer { lock.unlock() }
-            storage = storage.filter { existingIDs.contains($0.key) }
-        }
-
-        func clear() {
-            lock.lock()
-            defer { lock.unlock() }
-            storage.removeAll()
-        }
+    private struct ThumbnailStore {
+        var images: [CGWindowID: CGImage] = [:]
+        var insertionOrder: [CGWindowID] = []
     }
 
-    private let cache = FastThumbnailCache()
+    private let thumbnails = Mutex(ThumbnailStore())
 
     private init() {}
 
-    public func cachedThumbnail(for windowID: CGWindowID) -> NSImage? {
-        cache.get(for: windowID)
+    // MARK: - Thumbnail cache
+
+    func cachedThumbnail(for windowID: CGWindowID) -> CGImage? {
+        thumbnails.withLock { $0.images[windowID] }
     }
 
-    public func clearCache() {
-        cache.clear()
-    }
-
-@_silgen_name("_AXUIElementGetWindow")
-private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
-
-    /// Fetches all active windows from running standard applications, optionally including minimized windows, tabs, and other spaces.
-    public func fetchActiveWindows(
-        includeMinimized: Bool = false,
-        showTabs: Bool = false,
-        currentSpaceOnly: Bool = true
-    ) -> [WindowInfo] {
-        // Step 1: Always retrieve on-screen windows from the current desktop space
-        let onScreenOptions: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        guard let onScreenList = CGWindowListCopyWindowInfo(onScreenOptions, kCGNullWindowID) as? [[String: Any]] else {
-            return []
+    func clearCache() {
+        thumbnails.withLock {
+            $0.images.removeAll()
+            $0.insertionOrder.removeAll()
         }
+    }
 
-        let currentPID = ProcessInfo.processInfo.processIdentifier
+    private func store(_ image: CGImage, for windowID: CGWindowID) {
+        thumbnails.withLock { store in
+            if store.images.updateValue(image, forKey: windowID) == nil {
+                store.insertionOrder.append(windowID)
+            }
+            guard store.images.count > Self.thumbnailCacheLimit else { return }
+            let excess = store.images.count - Self.thumbnailCacheLimit
+            for evicted in store.insertionOrder.prefix(excess) {
+                store.images.removeValue(forKey: evicted)
+            }
+            store.insertionOrder.removeFirst(excess)
+        }
+    }
+
+    private func purgeThumbnails(keeping liveIDs: Set<CGWindowID>) {
+        thumbnails.withLock { store in
+            guard store.images.count > liveIDs.count else { return }
+            store.images = store.images.filter { liveIDs.contains($0.key) }
+            store.insertionOrder.removeAll { !liveIDs.contains($0) }
+        }
+    }
+
+    func fetchOnScreenWindows() -> [WindowInfo] {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        let raw = (CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]) ?? []
+
+        var apps = AppLookup()
         var results: [WindowInfo] = []
-        var seenIDs = Set<CGWindowID>()
-        var appCache: [pid_t: (name: String, icon: NSImage?)] = [:]
+        results.reserveCapacity(raw.count)
 
-        for info in onScreenList {
-            guard let windowNumber = info[kCGWindowNumber as String] as? NSNumber else { continue }
-            let windowID = CGWindowID(windowNumber.uint32Value)
-            if seenIDs.contains(windowID) { continue }
+        for info in raw {
+            guard let candidate = Candidate(info, minimumSide: 60, apps: &apps) else { continue }
+            if info[kCGWindowIsOnscreen as String] as? Bool == false { continue }
+            if candidate.title.isEmpty, Self.requiresTitle(appName: candidate.appName) { continue }
 
-            guard let pidNumber = info[kCGWindowOwnerPID as String] as? NSNumber else { continue }
-            let pid = pid_t(pidNumber.int32Value)
-            if pid == currentPID { continue }
-
-            let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
-            if layer != 0 { continue }
-
-            let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
-            if alpha < 0.05 { continue }
-
-            guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict) else {
-                continue
-            }
-            if bounds.width < 60 || bounds.height < 60 || bounds.origin.x < -2000 {
-                continue
-            }
-
-            let appName: String
-            let icon: NSImage?
-
-            if let cachedApp = appCache[pid] {
-                appName = cachedApp.name
-                icon = cachedApp.icon
-            } else {
-                guard let app = NSRunningApplication(processIdentifier: pid),
-                      app.activationPolicy == .regular else {
-                    continue
-                }
-                let resolvedName = (info[kCGWindowOwnerName as String] as? String) ?? app.localizedName ?? "App"
-                let resolvedIcon = app.icon
-                appCache[pid] = (resolvedName, resolvedIcon)
-                appName = resolvedName
-                icon = resolvedIcon
-            }
-
-            let windowTitle = (info[kCGWindowName as String] as? String) ?? ""
-            let trimmedTitle = windowTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            // Exclude windows explicitly marked offscreen
-            if let isOnscreen = info[kCGWindowIsOnscreen as String] as? Bool, !isOnscreen {
-                continue
-            }
-
-            // Filter out auxiliary, ghost, or backdrop windows with empty titles (especially for Safari and browsers)
-            let isBrowserOrDocApp = appName.localizedCaseInsensitiveContains("Safari") ||
-                                    appName.localizedCaseInsensitiveContains("Chrome") ||
-                                    appName.localizedCaseInsensitiveContains("Arc") ||
-                                    appName.localizedCaseInsensitiveContains("Firefox") ||
-                                    appName.localizedCaseInsensitiveContains("Brave") ||
-                                    appName.localizedCaseInsensitiveContains("Edge")
-            if isBrowserOrDocApp && trimmedTitle.isEmpty {
-                continue
-            }
-
-            let item = WindowInfo(
-                id: windowID,
-                pid: pid,
-                appName: appName,
-                title: windowTitle,
-                bounds: bounds,
-                layer: layer,
-                appIcon: icon,
-                isMinimized: false
-            )
-
-            seenIDs.insert(windowID)
-            results.append(item)
+            results.append(candidate.windowInfo(isMinimized: false))
         }
 
-        // Full system window list cache if needed for minimized windows, tabs, or all spaces
-        var allWindowsList: [[String: Any]] = []
-        var windowDict: [CGWindowID: [String: Any]] = [:]
-        var pidWindows: [pid_t: [[String: Any]]] = [:]
-
-        func ensureAllWindowsLoaded() {
-            guard allWindowsList.isEmpty else { return }
-            allWindowsList = (CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
-            for winInfo in allWindowsList {
-                if let num = winInfo[kCGWindowNumber as String] as? NSNumber {
-                    let wid = CGWindowID(num.uint32Value)
-                    windowDict[wid] = winInfo
-                    if let pidNum = winInfo[kCGWindowOwnerPID as String] as? NSNumber {
-                        pidWindows[pid_t(pidNum.int32Value), default: []].append(winInfo)
-                    }
-                }
-            }
-        }
-
-        // Step 2: Include truly minimized windows from running apps via Accessibility API
-        if includeMinimized {
-            ensureAllWindowsLoaded()
-
-            let regularApps = NSWorkspace.shared.runningApplications.filter {
-                $0.activationPolicy == .regular && $0.processIdentifier != currentPID
-            }
-
-            for app in regularApps {
-                let pid = app.processIdentifier
-                let appElement = AXUIElementCreateApplication(pid)
-                AXUIElementSetMessagingTimeout(appElement, 0.05) // Non-blocking: max 50ms per app
-
-                var windowsRef: CFTypeRef?
-                guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-                      let axWindows = windowsRef as? [AXUIElement] else {
-                    continue
-                }
-
-                for axWin in axWindows {
-                    var minRef: CFTypeRef?
-                    guard AXUIElementCopyAttributeValue(axWin, kAXMinimizedAttribute as CFString, &minRef) == .success,
-                          let isMin = minRef as? NSNumber, isMin.boolValue else {
-                        continue
-                    }
-
-                    // Window is confirmed minimized to the Dock
-                    var winID: CGWindowID = 0
-                    let axErr = _AXUIElementGetWindow(axWin, &winID)
-
-                    var titleRef: CFTypeRef?
-                    AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef)
-                    let axTitle = (titleRef as? String) ?? ""
-
-                    var matchedInfo: [String: Any]?
-                    if axErr == .success && winID > 0 {
-                        matchedInfo = windowDict[winID]
-                    }
-
-                    // Fallback matching if _AXUIElementGetWindow returned 0
-                    if matchedInfo == nil {
-                        if let candidates = pidWindows[pid] {
-                            matchedInfo = candidates.first(where: { info in
-                                guard let num = info[kCGWindowNumber as String] as? NSNumber else { return false }
-                                let id = CGWindowID(num.uint32Value)
-                                if seenIDs.contains(id) { return false }
-                                let name = (info[kCGWindowName as String] as? String) ?? ""
-                                return !axTitle.isEmpty && name == axTitle
-                            }) ?? candidates.first(where: { info in
-                                guard let num = info[kCGWindowNumber as String] as? NSNumber else { return false }
-                                let id = CGWindowID(num.uint32Value)
-                                return !seenIDs.contains(id)
-                            })
-
-                            if let found = matchedInfo, let num = found[kCGWindowNumber as String] as? NSNumber {
-                                winID = CGWindowID(num.uint32Value)
-                            }
-                        }
-                    }
-
-                    guard winID > 0, !seenIDs.contains(winID) else { continue }
-
-                    var bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
-                    if let info = matchedInfo,
-                       let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                       let b = CGRect(dictionaryRepresentation: boundsDict) {
-                        bounds = b
-                    } else {
-                        var posValue: CFTypeRef?
-                        var sizeValue: CFTypeRef?
-                        var pos = CGPoint.zero
-                        var size = CGSize(width: 800, height: 600)
-                        if AXUIElementCopyAttributeValue(axWin, kAXPositionAttribute as CFString, &posValue) == .success,
-                           let pv = posValue, CFGetTypeID(pv) == AXValueGetTypeID() {
-                            AXValueGetValue((pv as! AXValue), .cgPoint, &pos)
-                        }
-                        if AXUIElementCopyAttributeValue(axWin, kAXSizeAttribute as CFString, &sizeValue) == .success,
-                           let sv = sizeValue, CFGetTypeID(sv) == AXValueGetTypeID() {
-                            AXValueGetValue((sv as! AXValue), .cgSize, &size)
-                        }
-                        bounds = CGRect(origin: pos, size: size)
-                    }
-
-                    let appName = (matchedInfo?[kCGWindowOwnerName as String] as? String) ?? app.localizedName ?? "App"
-                    let finalTitle = !axTitle.isEmpty ? axTitle : ((matchedInfo?[kCGWindowName as String] as? String) ?? "")
-
-                    let item = WindowInfo(
-                        id: winID,
-                        pid: pid,
-                        appName: appName,
-                        title: finalTitle,
-                        bounds: bounds,
-                        layer: 0,
-                        appIcon: app.icon,
-                        isMinimized: true
-                    )
-
-                    seenIDs.insert(winID)
-
-                    // Keep minimized windows grouped adjacent to active windows of the same app
-                    if let lastAppIndex = results.lastIndex(where: { $0.pid == pid }) {
-                        results.insert(item, at: lastAppIndex + 1)
-                    } else {
-                        results.append(item)
-                    }
-                }
-            }
-        }
-
-        // Step 3: Optional tab inclusion or other spaces inclusion
-        if showTabs || !currentSpaceOnly {
-            ensureAllWindowsLoaded()
-
-            for info in allWindowsList {
-                guard let windowNumber = info[kCGWindowNumber as String] as? NSNumber else { continue }
-                let windowID = CGWindowID(windowNumber.uint32Value)
-                if seenIDs.contains(windowID) { continue }
-
-                guard let pidNumber = info[kCGWindowOwnerPID as String] as? NSNumber else { continue }
-                let pid = pid_t(pidNumber.int32Value)
-                if pid == currentPID { continue }
-
-                let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
-                if layer != 0 { continue }
-
-                let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
-                if alpha < 0.05 { continue }
-
-                guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                      let bounds = CGRect(dictionaryRepresentation: boundsDict) else {
-                    continue
-                }
-                if bounds.width < 120 || bounds.height < 120 || bounds.origin.x < -2000 {
-                    continue
-                }
-
-                // If only showTabs is enabled (but currentSpaceOnly is true), only accept tabs from apps already on-screen
-                let isAppOnScreen = results.contains(where: { $0.pid == pid })
-                if showTabs && currentSpaceOnly && !isAppOnScreen {
-                    continue
-                }
-
-                guard let app = NSRunningApplication(processIdentifier: pid),
-                      app.activationPolicy == .regular else {
-                    continue
-                }
-
-                let appName = (info[kCGWindowOwnerName as String] as? String) ?? app.localizedName ?? "App"
-                let windowTitle = (info[kCGWindowName as String] as? String) ?? ""
-
-                // Filter out headless or empty title offscreen utility windows
-                if windowTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    continue
-                }
-
-                let item = WindowInfo(
-                    id: windowID,
-                    pid: pid,
-                    appName: appName,
-                    title: windowTitle,
-                    bounds: bounds,
-                    layer: layer,
-                    appIcon: app.icon,
-                    isMinimized: false
-                )
-
-                seenIDs.insert(windowID)
-                if let lastAppIndex = results.lastIndex(where: { $0.pid == pid }) {
-                    results.insert(item, at: lastAppIndex + 1)
-                } else {
-                    results.append(item)
-                }
-            }
-        }
-
-        // Automatic memory cleanup: purge closed windows from cache
-        cache.purgeMissing(existingIDs: seenIDs)
-
+        purgeThumbnails(keeping: Set(results.map(\.id)))
         return results
     }
 
-    /// Captures a crisp thumbnail using Apple's high-performance ScreenCaptureKit.
-    public func captureThumbnail(for windowID: CGWindowID, from window: SCWindow? = nil) async -> NSImage? {
-        do {
-            let scWindow: SCWindow
-            if let direct = window {
-                scWindow = direct
-            } else {
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                guard let found = content.windows.first(where: { $0.windowID == windowID }) else {
-                    return nil
-                }
-                scWindow = found
+    func fetchExtendedWindows(
+        base: [WindowInfo],
+        includeMinimized: Bool,
+        showTabs: Bool,
+        currentSpaceOnly: Bool
+    ) async -> [WindowInfo] {
+        var results = base
+        var seenIDs = Set(base.map(\.id))
+        let allWindows = (CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+
+        var byWindowID: [CGWindowID: [String: Any]] = [:]
+        var byPID: [pid_t: [[String: Any]]] = [:]
+        byWindowID.reserveCapacity(allWindows.count)
+        for info in allWindows {
+            guard let number = info[kCGWindowNumber as String] as? NSNumber,
+                  let ownerPID = info[kCGWindowOwnerPID as String] as? NSNumber else { continue }
+            byWindowID[CGWindowID(number.uint32Value)] = info
+            byPID[pid_t(ownerPID.int32Value), default: []].append(info)
+        }
+
+        var apps = AppLookup()
+
+        if includeMinimized {
+            let candidatePIDs = NSWorkspace.shared.runningApplications.compactMap { app -> pid_t? in
+                guard app.activationPolicy == .regular, app.processIdentifier != apps.currentPID else { return nil }
+                return app.processIdentifier
             }
 
-            let config = SCStreamConfiguration()
-            config.width = 460
-            config.height = 280
-            config.showsCursor = false
-            config.scalesToFit = true
-            config.pixelFormat = kCVPixelFormatType_32BGRA
+            for minimized in await Self.collectMinimizedWindows(pids: candidatePIDs) {
+                var windowID = minimized.windowID
+                var matched = windowID > 0 ? byWindowID[windowID] : nil
 
-            let filter = SCContentFilter(desktopIndependentWindow: scWindow)
-            let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+                if matched == nil, let candidates = byPID[minimized.pid] {
+                    matched = candidates.first { info in
+                        guard let id = Self.windowID(info), !seenIDs.contains(id) else { return false }
+                        return !minimized.title.isEmpty && info[kCGWindowName as String] as? String == minimized.title
+                    } ?? candidates.first { info in
+                        guard let id = Self.windowID(info) else { return false }
+                        return !seenIDs.contains(id)
+                    }
+                    if let matched, let id = Self.windowID(matched) { windowID = id }
+                }
 
-            let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            cache.set(image, for: windowID)
-            return image
-        } catch {
-            return nil
+                guard windowID > 0, seenIDs.insert(windowID).inserted else { continue }
+
+                let bounds = matched.flatMap(Self.bounds) ?? minimized.bounds
+                let appName = matched?[kCGWindowOwnerName as String] as? String
+                    ?? apps.name(for: minimized.pid)
+                    ?? "App"
+                let title = minimized.title.isEmpty
+                    ? (matched?[kCGWindowName as String] as? String ?? "")
+                    : minimized.title
+
+                Self.insertGrouped(
+                    WindowInfo(
+                        id: windowID,
+                        pid: minimized.pid,
+                        appName: appName,
+                        title: title,
+                        bounds: bounds,
+                        isMinimized: true
+                    ),
+                    into: &results
+                )
+            }
+        }
+
+        if showTabs || !currentSpaceOnly {
+            var onScreenPIDs = Set(base.map(\.pid))
+
+            for info in allWindows {
+                guard let candidate = Candidate(info, minimumSide: 120, apps: &apps) else { continue }
+                if seenIDs.contains(candidate.id) { continue }
+                if candidate.title.isEmpty { continue }
+                if showTabs, currentSpaceOnly, !onScreenPIDs.contains(candidate.pid) { continue }
+
+                seenIDs.insert(candidate.id)
+                onScreenPIDs.insert(candidate.pid)
+                Self.insertGrouped(candidate.windowInfo(isMinimized: false), into: &results)
+            }
+        }
+
+        purgeThumbnails(keeping: seenIDs)
+        return results
+    }
+
+    private static func insertGrouped(_ window: WindowInfo, into results: inout [WindowInfo]) {
+        if let lastOfSameApp = results.lastIndex(where: { $0.pid == window.pid }) {
+            results.insert(window, at: lastOfSameApp + 1)
+        } else {
+            results.append(window)
         }
     }
 
-    /// Brings the target application and window smoothly into the foreground.
-    public func focus(window: WindowInfo) {
-        guard let app = NSRunningApplication(processIdentifier: window.pid) else { return }
+    private static func requiresTitle(appName: String) -> Bool {
+        let lower = appName.lowercased()
+        return browserNames.contains { lower.contains($0) }
+    }
 
-        if app.isHidden {
-            app.unhide()
+    private static func windowID(_ info: [String: Any]) -> CGWindowID? {
+        (info[kCGWindowNumber as String] as? NSNumber).map { CGWindowID($0.uint32Value) }
+    }
+
+    private static func bounds(_ info: [String: Any]) -> CGRect? {
+        guard let dictionary = info[kCGWindowBounds as String] as? NSDictionary else { return nil }
+        return CGRect(dictionaryRepresentation: dictionary)
+    }
+
+    private struct AppLookup {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        private var names: [pid_t: String?] = [:]
+
+        mutating func name(for pid: pid_t) -> String? {
+            if let cached = names[pid] { return cached }
+            let app = NSRunningApplication(processIdentifier: pid)
+            let resolved = app?.activationPolicy == .regular ? (app?.localizedName ?? "App") : nil
+            names[pid] = resolved
+            return resolved
+        }
+    }
+
+    private struct Candidate {
+        let id: CGWindowID
+        let pid: pid_t
+        let appName: String
+        let title: String
+        let bounds: CGRect
+
+        init?(_ info: [String: Any], minimumSide: CGFloat, apps: inout AppLookup) {
+            guard let id = WindowManager.windowID(info),
+                  let ownerPID = info[kCGWindowOwnerPID as String] as? NSNumber else { return nil }
+            let pid = pid_t(ownerPID.int32Value)
+            guard pid != apps.currentPID else { return nil }
+            guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { return nil }
+            guard (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0 >= 0.05 else { return nil }
+            guard let bounds = WindowManager.bounds(info),
+                  bounds.width >= minimumSide,
+                  bounds.height >= minimumSide,
+                  bounds.origin.x >= -2000 else { return nil }
+            guard let ownerName = apps.name(for: pid) else { return nil }
+            let appName = info[kCGWindowOwnerName as String] as? String ?? ownerName
+
+            self.id = id
+            self.pid = pid
+            self.appName = appName
+            self.bounds = bounds
+            self.title = (info[kCGWindowName as String] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
+        func windowInfo(isMinimized: Bool) -> WindowInfo {
+            WindowInfo(id: id, pid: pid, appName: appName, title: title, bounds: bounds, isMinimized: isMinimized)
+        }
+    }
+
+    private struct MinimizedWindow: Sendable {
+        let pid: pid_t
+        let windowID: CGWindowID
+        let title: String
+        let bounds: CGRect
+    }
+
+    private static func collectMinimizedWindows(pids: [pid_t]) async -> [MinimizedWindow] {
+        guard !pids.isEmpty else { return [] }
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let collected = Mutex<[MinimizedWindow]>([])
+                DispatchQueue.concurrentPerform(iterations: pids.count) { index in
+                    let found = minimizedWindows(pid: pids[index])
+                    guard !found.isEmpty else { return }
+                    collected.withLock { $0.append(contentsOf: found) }
+                }
+                continuation.resume(returning: collected.withLock { $0 })
+            }
+        }
+    }
+
+    private static func axWindows(pid: pid_t, timeout: Float) -> [AXUIElement] {
+        let application = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(application, timeout)
+
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else {
+            return []
+        }
+        return windows
+    }
+
+    private static func minimizedWindows(pid: pid_t) -> [MinimizedWindow] {
+        let axWindows = axWindows(pid: pid, timeout: axMessagingTimeout)
+        guard !axWindows.isEmpty else { return [] }
+
+        var results: [MinimizedWindow] = []
+        for axWindow in axWindows {
+            var minimizedRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minimizedRef) == .success,
+                  (minimizedRef as? NSNumber)?.boolValue == true else {
+                continue
+            }
+
+            var windowID: CGWindowID = 0
+            if axWindowID(axWindow, &windowID) != .success { windowID = 0 }
+
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+
+            results.append(
+                MinimizedWindow(
+                    pid: pid,
+                    windowID: windowID,
+                    title: (titleRef as? String) ?? "",
+                    bounds: windowID > 0 ? .zero : axFrame(of: axWindow)
+                )
+            )
+        }
+        return results
+    }
+
+    private static func axFrame(of element: AXUIElement) -> CGRect {
+        var origin = CGPoint.zero
+        var size = CGSize(width: 800, height: 600)
+
+        var positionRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionRef) == .success,
+           let value = positionRef, CFGetTypeID(value) == AXValueGetTypeID() {
+            AXValueGetValue(unsafeDowncast(value as AnyObject, to: AXValue.self), .cgPoint, &origin)
+        }
+        var sizeRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+           let value = sizeRef, CFGetTypeID(value) == AXValueGetTypeID() {
+            AXValueGetValue(unsafeDowncast(value as AnyObject, to: AXValue.self), .cgSize, &size)
+        }
+        return CGRect(origin: origin, size: size)
+    }
+
+    private static func resolve(_ window: WindowInfo, among axWindows: [AXUIElement]) -> AXUIElement? {
+        for axWindow in axWindows {
+            var id: CGWindowID = 0
+            if axWindowID(axWindow, &id) == .success, id == window.id {
+                return axWindow
+            }
+        }
+
+        guard !window.title.isEmpty else { return axWindows.first }
+
+        for axWindow in axWindows {
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef) == .success,
+               titleRef as? String == window.title {
+                return axWindow
+            }
+        }
+        return axWindows.first
+    }
+
+    private func performOnTargetAXWindow(for window: WindowInfo, action: @escaping @Sendable (AXUIElement) -> Void) {
+        Task.detached(priority: .userInitiated) {
+            let axWindows = Self.axWindows(pid: window.pid, timeout: Self.axActionTimeout)
+            guard let target = Self.resolve(window, among: axWindows) else { return }
+            action(target)
+        }
+    }
+
+    func focus(window: WindowInfo) {
+        guard let app = NSRunningApplication(processIdentifier: window.pid) else { return }
+        if app.isHidden { app.unhide() }
         app.activate()
 
-        let appElement = AXUIElementCreateApplication(window.pid)
-        var windowsValue: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue)
-
-        if result == .success, let axWindows = windowsValue as? [AXUIElement] {
-            var bestMatch: AXUIElement?
-
-            for axWin in axWindows {
-                var titleValue: CFTypeRef?
-                let titleRes = AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleValue)
-                let axTitle = (titleRes == .success ? titleValue as? String : nil) ?? ""
-
-                var posValue: CFTypeRef?
-                var sizeValue: CFTypeRef?
-                var pos = CGPoint.zero
-                var size = CGSize.zero
-
-                if AXUIElementCopyAttributeValue(axWin, kAXPositionAttribute as CFString, &posValue) == .success,
-                   let pv = posValue, CFGetTypeID(pv) == AXValueGetTypeID() {
-                    AXValueGetValue((pv as! AXValue), .cgPoint, &pos)
-                }
-                if AXUIElementCopyAttributeValue(axWin, kAXSizeAttribute as CFString, &sizeValue) == .success,
-                   let sv = sizeValue, CFGetTypeID(sv) == AXValueGetTypeID() {
-                    AXValueGetValue((sv as! AXValue), .cgSize, &size)
-                }
-
-                if !window.title.isEmpty && axTitle == window.title {
-                    bestMatch = axWin
-                    break
-                }
-
-                let posDiff = abs(pos.x - window.bounds.origin.x) + abs(pos.y - window.bounds.origin.y)
-                let sizeDiff = abs(size.width - window.bounds.size.width) + abs(size.height - window.bounds.size.height)
-                if posDiff < 30 && sizeDiff < 30 {
-                    bestMatch = axWin
-                    break
-                }
+        performOnTargetAXWindow(for: window) { target in
+            var minimizedRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(target, kAXMinimizedAttribute as CFString, &minimizedRef) == .success,
+               (minimizedRef as? NSNumber)?.boolValue == true {
+                AXUIElementSetAttributeValue(target, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
             }
 
-            let target = bestMatch ?? axWindows.first
-            if let target = target {
-                // If the target window is minimized, unminimize/restore it
-                var minVal: CFTypeRef?
-                if AXUIElementCopyAttributeValue(target, kAXMinimizedAttribute as CFString, &minVal) == .success,
-                   let isMin = minVal as? NSNumber, isMin.boolValue {
-                    AXUIElementSetAttributeValue(target, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-                }
-
-                AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue)
-                AXUIElementPerformAction(target, kAXRaiseAction as CFString)
-            }
+            AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue)
+            AXUIElementPerformAction(target, kAXRaiseAction as CFString)
         }
     }
 
-    /// Closes the specified window smoothly via macOS Accessibility API
-    public func close(window: WindowInfo) {
-        let appElement = AXUIElementCreateApplication(window.pid)
-        var windowsValue: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue)
+    func quitApplication(pid: pid_t) {
+        NSRunningApplication(processIdentifier: pid)?.terminate()
+    }
 
-        guard result == .success, let axWindows = windowsValue as? [AXUIElement] else {
+    func close(window: WindowInfo) {
+        performOnTargetAXWindow(for: window) { target in
+            var closeButtonRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(target, kAXCloseButtonAttribute as CFString, &closeButtonRef) == .success,
+                  let closeButton = closeButtonRef,
+                  CFGetTypeID(closeButton) == AXUIElementGetTypeID() else {
+                return
+            }
+            AXUIElementPerformAction(unsafeDowncast(closeButton as AnyObject, to: AXUIElement.self), kAXPressAction as CFString)
+        }
+    }
+
+    private struct Unchecked<Value>: @unchecked Sendable {
+        let value: Value
+
+        init(_ value: Value) { self.value = value }
+    }
+
+    func captureThumbnails(
+        for windows: [WindowInfo],
+        priorityID: CGWindowID?,
+        onCapture: @escaping @Sendable @MainActor (CGWindowID, CGImage) -> Void
+    ) async {
+        guard !windows.isEmpty,
+              let shareable = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true),
+              !Task.isCancelled else {
             return
         }
 
-        var targetWindow: AXUIElement?
+        var scWindows: [CGWindowID: SCWindow] = [:]
+        scWindows.reserveCapacity(shareable.windows.count)
+        for window in shareable.windows { scWindows[window.windowID] = window }
 
-        // Match by CGWindowID first
-        for axWin in axWindows {
-            var winID: CGWindowID = 0
-            if _AXUIElementGetWindow(axWin, &winID) == .success && winID == window.id {
-                targetWindow = axWin
-                break
-            }
+        var ordered = windows.filter { scWindows[$0.id] != nil }
+        if let priorityID, let index = ordered.firstIndex(where: { $0.id == priorityID }) {
+            ordered.insert(ordered.remove(at: index), at: 0)
         }
+        guard !ordered.isEmpty else { return }
 
-        // Fallback: match by title and bounds
-        if targetWindow == nil {
-            for axWin in axWindows {
-                var titleValue: CFTypeRef?
-                let titleRes = AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleValue)
-                let axTitle = (titleRes == .success ? titleValue as? String : nil) ?? ""
+        await withTaskGroup(of: (CGWindowID, CGImage)?.self) { group in
+            var next = 0
+            let inFlight = min(Self.maxConcurrentCaptures, ordered.count)
 
-                if !window.title.isEmpty && axTitle == window.title {
-                    targetWindow = axWin
-                    break
+            func schedule() {
+                guard next < ordered.count else { return }
+                let window = ordered[next]
+                next += 1
+                guard let match = scWindows[window.id] else { return }
+                let scWindow = Unchecked(match)
+                group.addTask { [self] in
+                    guard let image = await capture(scWindow.value, aspectOf: window.bounds) else { return nil }
+                    return (window.id, image)
                 }
             }
-        }
 
-        guard let target = targetWindow ?? axWindows.first else { return }
+            for _ in 0..<inFlight { schedule() }
 
-        // Find the close button and press it
-        var closeButtonValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(target, kAXCloseButtonAttribute as CFString, &closeButtonValue) == .success,
-           let closeBtn = closeButtonValue {
-            _ = AXUIElementPerformAction(closeBtn as! AXUIElement, kAXPressAction as CFString)
+            while let result = await group.next() {
+                if Task.isCancelled { group.cancelAll(); return }
+                if let (id, image) = result {
+                    await onCapture(id, image)
+                }
+                schedule()
+            }
         }
+    }
+
+    private func capture(_ scWindow: SCWindow, aspectOf bounds: CGRect) async -> CGImage? {
+        let configuration = SCStreamConfiguration()
+        let (width, height) = Self.thumbnailPixelSize(for: bounds)
+        configuration.width = width
+        configuration.height = height
+        configuration.showsCursor = false
+        configuration.scalesToFit = true
+        configuration.ignoreShadowsSingleWindow = true
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+
+        let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+        guard let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration) else {
+            return nil
+        }
+        store(image, for: scWindow.windowID)
+        return image
+    }
+
+    private static func thumbnailPixelSize(for bounds: CGRect) -> (width: Int, height: Int) {
+        let maxWidth: CGFloat = 560
+        let maxHeight: CGFloat = 352
+        guard bounds.width > 0, bounds.height > 0 else { return (Int(maxWidth), Int(maxHeight)) }
+
+        let aspect = bounds.width / bounds.height
+        var width = maxWidth
+        var height = maxWidth / aspect
+        if height > maxHeight {
+            height = maxHeight
+            width = maxHeight * aspect
+        }
+        return (max(2, Int(width.rounded())), max(2, Int(height.rounded())))
     }
 }

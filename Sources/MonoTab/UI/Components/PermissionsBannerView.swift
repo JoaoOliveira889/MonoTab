@@ -1,11 +1,11 @@
 import SwiftUI
 
-public struct PermissionsBannerView: View {
-    @ObservedObject var permissions = PermissionsManager.shared
+struct PermissionsBannerView: View {
+    private let permissions = PermissionsManager.shared
 
-    public init() {}
+    init() {}
 
-    public var body: some View {
+    var body: some View {
         if !permissions.allGranted && !permissions.bannerDismissed {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
@@ -34,10 +34,7 @@ public struct PermissionsBannerView: View {
 
                 HStack(spacing: 12) {
                     if !permissions.hasAccessibility {
-                        Button(action: {
-                            permissions.checkAccessibility(prompt: true)
-                            permissions.openAccessibilitySettings()
-                        }) {
+                        Button(action: { permissions.openAccessibilityPreferences() }) {
                             Label("Enable Accessibility", systemImage: "hand.tap.fill")
                                 .font(.system(size: 11, weight: .medium))
                         }
@@ -47,10 +44,7 @@ public struct PermissionsBannerView: View {
                     }
 
                     if !permissions.hasScreenRecording {
-                        Button(action: {
-                            permissions.checkScreenRecording(prompt: true)
-                            permissions.openScreenRecordingSettings()
-                        }) {
+                        Button(action: { permissions.openScreenRecordingPreferences() }) {
                             Label("Enable Screen Recording", systemImage: "record.circle")
                                 .font(.system(size: 11, weight: .medium))
                         }
