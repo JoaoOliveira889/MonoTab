@@ -124,4 +124,36 @@ struct NavigationTests {
         #expect(viewModel.slot(for: 1) === viewModel.slot(for: 1))
         #expect(viewModel.slot(for: 1) !== viewModel.slot(for: 2))
     }
+
+    @Test("Quick select selects the exact window by number")
+    func quickSelect() {
+        let viewModel = viewModel(windowCount: 5)
+        let selected1 = viewModel.quickSelect(number: 1)
+        #expect(selected1?.id == 1)
+        #expect(viewModel.selectedIndex == 0)
+
+        let selected3 = viewModel.quickSelect(number: 3)
+        #expect(selected3?.id == 3)
+        #expect(viewModel.selectedIndex == 2)
+
+        let invalid = viewModel.quickSelect(number: 99)
+        #expect(invalid == nil)
+        #expect(viewModel.selectedIndex == 2)
+    }
+
+    @Test("Preview state toggles and closes properly")
+    func previewState() {
+        let viewModel = viewModel(windowCount: 3)
+        #expect(!viewModel.isPreviewOpen)
+
+        viewModel.togglePreview()
+        #expect(viewModel.isPreviewOpen)
+
+        viewModel.closePreview()
+        #expect(!viewModel.isPreviewOpen)
+
+        viewModel.openPreview()
+        #expect(viewModel.isPreviewOpen)
+    }
 }
+

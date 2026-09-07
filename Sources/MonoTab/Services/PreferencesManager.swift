@@ -48,6 +48,20 @@ enum DisplayModePreference: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum ScreenTargetPreference: String, CaseIterable, Identifiable, Sendable {
+    case mouseLocation
+    case activeWindow
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .mouseLocation: "Under Mouse Pointer"
+        case .activeWindow: "Screen with Active Window"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class PreferencesManager {
@@ -60,6 +74,8 @@ final class PreferencesManager {
         static let showAppTabs = "monotab_show_app_tabs"
         static let currentSpaceOnly = "monotab_current_space_only"
         static let showMenuBarIcon = "monotab_show_menu_bar_icon"
+        static let screenTarget = "monotab_screen_target"
+        static let showQuickShortcuts = "monotab_show_quick_shortcuts"
     }
 
     var shortcut: ShortcutPreference {
@@ -75,6 +91,17 @@ final class PreferencesManager {
             guard displayMode != oldValue else { return }
             UserDefaults.standard.set(displayMode.rawValue, forKey: Key.displayMode)
         }
+    }
+
+    var screenTarget: ScreenTargetPreference {
+        didSet {
+            guard screenTarget != oldValue else { return }
+            UserDefaults.standard.set(screenTarget.rawValue, forKey: Key.screenTarget)
+        }
+    }
+
+    var showQuickShortcuts: Bool {
+        didSet { UserDefaults.standard.set(showQuickShortcuts, forKey: Key.showQuickShortcuts) }
     }
 
     var showMinimizedWindows: Bool {
@@ -121,6 +148,8 @@ final class PreferencesManager {
         let defaults = UserDefaults.standard
         shortcut = defaults.string(forKey: Key.shortcut).flatMap(ShortcutPreference.init) ?? .both
         displayMode = defaults.string(forKey: Key.displayMode).flatMap(DisplayModePreference.init) ?? .compact
+        screenTarget = defaults.string(forKey: Key.screenTarget).flatMap(ScreenTargetPreference.init) ?? .mouseLocation
+        showQuickShortcuts = defaults.object(forKey: Key.showQuickShortcuts) as? Bool ?? true
         showMinimizedWindows = defaults.bool(forKey: Key.showMinimized)
         showAppTabs = defaults.bool(forKey: Key.showAppTabs)
         currentSpaceOnly = defaults.object(forKey: Key.currentSpaceOnly) as? Bool ?? true

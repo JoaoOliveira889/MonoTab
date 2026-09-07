@@ -4,6 +4,7 @@ struct WindowThumbnailCard: View {
     let window: WindowInfo
     let slot: ThumbnailSlot
     let isSelected: Bool
+    let index: Int?
     let cardWidth: CGFloat
     let cardHeight: CGFloat
     let onSelect: () -> Void
@@ -16,6 +17,7 @@ struct WindowThumbnailCard: View {
         window: WindowInfo,
         slot: ThumbnailSlot,
         isSelected: Bool,
+        index: Int? = nil,
         cardWidth: CGFloat,
         cardHeight: CGFloat,
         onSelect: @escaping () -> Void,
@@ -25,6 +27,7 @@ struct WindowThumbnailCard: View {
         self.window = window
         self.slot = slot
         self.isSelected = isSelected
+        self.index = index
         self.cardWidth = cardWidth
         self.cardHeight = cardHeight
         self.onSelect = onSelect
@@ -75,20 +78,28 @@ struct WindowThumbnailCard: View {
                 placeholder
             }
 
-            if isHovered {
+            if isHovered || (index != nil && index! < 9 && PreferencesManager.shared.showQuickShortcuts) {
                 VStack {
                     HStack {
-                        Spacer()
-                        Button(action: onClose) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 16))
-                                .foregroundColor(.white.opacity(0.85))
-                                .shadow(color: Color.black.opacity(0.5), radius: 3, x: 0, y: 1)
+                        if let index, index < 9, PreferencesManager.shared.showQuickShortcuts {
+                            QuickKeyBadge(number: index + 1)
                         }
-                        .buttonStyle(.plain)
-                        .padding(6)
-                        .help("Close window (w)")
+
+                        Spacer()
+
+                        if isHovered {
+                            Button(action: onClose) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.white.opacity(0.85))
+                                    .shadow(color: Color.black.opacity(0.5), radius: 3, x: 0, y: 1)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Close window (w)")
+                        }
                     }
+                    .padding(6)
+
                     Spacer()
                 }
                 .transition(.opacity)
@@ -143,6 +154,10 @@ struct WindowThumbnailCard: View {
                     if window.isMinimized {
                         MinimizedBadge()
                     }
+
+                    if let display = window.displayIndex {
+                        DisplayBadge(index: display)
+                    }
                 }
 
                 Text(window.appName)
@@ -153,6 +168,39 @@ struct WindowThumbnailCard: View {
 
             Spacer(minLength: 0)
         }
+    }
+}
+
+private struct QuickKeyBadge: View {
+    let number: Int
+
+    var body: some View {
+        Text("\(number)")
+            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+            .foregroundColor(.primary)
+            .padding(.horizontal, 4.5)
+            .padding(.vertical, 2)
+            .surfaceTile(cornerRadius: 4)
+            .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
+    }
+}
+
+private struct DisplayBadge: View {
+    let index: Int
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "display")
+                .font(.system(size: 6.5))
+            Text("\(index)")
+                .font(.system(size: 8, weight: .bold, design: .rounded))
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 1.5)
+        .background(Color.blue.opacity(0.16))
+        .overlay(Capsule().strokeBorder(Color.blue.opacity(0.35), lineWidth: 0.5))
+        .clipShape(Capsule())
+        .foregroundColor(.blue)
     }
 }
 
@@ -172,3 +220,4 @@ private struct MinimizedBadge: View {
         .foregroundColor(.orange)
     }
 }
+

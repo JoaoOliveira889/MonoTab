@@ -40,6 +40,10 @@ final class SwitcherViewModel {
 
     var maxGridHeight: CGFloat = 640
 
+    var isAppOnlyMode: Bool = false
+    var isPreviewOpen: Bool = false
+    @ObservationIgnored var targetAppPID: pid_t?
+
     var isSearchMode: Bool = false {
         didSet {
             guard isSearchMode != oldValue else { return }
@@ -89,30 +93,39 @@ final class SwitcherViewModel {
         filteredWindows = ranked.map(\.window)
     }
 
-    func refreshWindows() {
+    func refreshWindows(appOnly: Bool = false, targetPID: pid_t? = nil) {
         extendedFetchTask?.cancel()
         searchQuery = ""
         isSearchMode = false
         isSettingsOpen = false
+        isPreviewOpen = false
+        isAppOnlyMode = appOnly
+        targetAppPID = targetPID
 
         let preferences = PreferencesManager.shared
         let includeMinimized = preferences.showMinimizedWindows
         let showTabs = preferences.showAppTabs
         let currentSpaceOnly = preferences.currentSpaceOnly
 
-        let base = WindowManager.shared.fetchOnScreenWindows()
+        var base = WindowManager.shared.fetchOnScreenWindows()
+        if appOnly, let targetPID {
+            base = base.filter { $0.pid == targetPID }
+        }
         apply(windows: base, preferredID: nil)
 
         guard includeMinimized || showTabs || !currentSpaceOnly else { return }
 
         let preferredID = selectedWindow?.id
         extendedFetchTask = Task { [weak self] in
-            let extended = await WindowManager.shared.fetchExtendedWindows(
+            var extended = await WindowManager.shared.fetchExtendedWindows(
                 base: base,
                 includeMinimized: includeMinimized,
                 showTabs: showTabs,
                 currentSpaceOnly: currentSpaceOnly
             )
+            if appOnly, let targetPID {
+                extended = extended.filter { $0.pid == targetPID }
+            }
             guard !Task.isCancelled, let self, extended.count != base.count else { return }
             self.apply(windows: extended, preferredID: preferredID)
         }
@@ -248,4 +261,39 @@ final class SwitcherViewModel {
     func toggleSettings() {
         isSettingsOpen.toggle()
     }
+
+    @discardableResult
+    func quickSelect(number: Int) -> WindowInfo? {
+        guard number >= 1, number <= filteredWindows.count else { return nil }
+        selectedIndex = number - 1
+        return selectedWindow
+    }
+
+    func togglePreview() {
+        isPreviewOpen.toggle()
+    }
+
+    func openPreview() {
+        isPreviewOpen = true
+    }
+
+    func closePreview() {
+        isPreviewOpen = false
+    }
+
+    func toggleMinimizeSelected() {
+        guard let window = selectedWindow else { return }
+        WindowManager.shared.toggleMinimize(window: window)
+    }
+
+    func toggleZoomSelected() {
+        guard let window = selectedWindow else { return }
+        WindowManager.shared.toggleZoom(window: window)
+    }
+
+    func hideSelectedApp() {
+        guard let window = selectedWindow else { return }
+        WindowManager.shared.hideApplication(pid: window.pid)
+    }
 }
+

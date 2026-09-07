@@ -23,6 +23,7 @@ final class WindowManager: Sendable {
     }
 
     private let thumbnails = Mutex(ThumbnailStore())
+    private let appsCache = Mutex(AppLookup())
 
     private init() {}
 
@@ -37,6 +38,21 @@ final class WindowManager: Sendable {
             $0.images.removeAll()
             $0.insertionOrder.removeAll()
         }
+        appsCache.withLock {
+            $0.purge()
+        }
+    }
+
+    static func displayIndex(for bounds: CGRect) -> Int? {
+        let screens = NSScreen.screens
+        guard screens.count > 1 else { return nil }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        for (index, screen) in screens.enumerated() {
+            if NSMouseInRect(center, screen.frame, false) {
+                return index + 1
+            }
+        }
+        return 1
     }
 
     private func store(_ image: CGImage, for windowID: CGWindowID) {
@@ -65,16 +81,17 @@ final class WindowManager: Sendable {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         let raw = (CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]) ?? []
 
-        var apps = AppLookup()
         var results: [WindowInfo] = []
         results.reserveCapacity(raw.count)
 
-        for info in raw {
-            guard let candidate = Candidate(info, minimumSide: 60, apps: &apps) else { continue }
-            if info[kCGWindowIsOnscreen as String] as? Bool == false { continue }
-            if candidate.title.isEmpty, Self.requiresTitle(appName: candidate.appName) { continue }
+        appsCache.withLock { apps in
+            for info in raw {
+                guard let candidate = Candidate(info, minimumSide: 60, apps: &apps) else { continue }
+                if info[kCGWindowIsOnscreen as String] as? Bool == false { continue }
+                if candidate.title.isEmpty, Self.requiresTitle(appName: candidate.appName) { continue }
 
-            results.append(candidate.windowInfo(isMinimized: false))
+                results.append(candidate.windowInfo(isMinimized: false))
+            }
         }
 
         purgeThumbnails(keeping: Set(results.map(\.id)))
@@ -101,65 +118,71 @@ final class WindowManager: Sendable {
             byPID[pid_t(ownerPID.int32Value), default: []].append(info)
         }
 
-        var apps = AppLookup()
 
         if includeMinimized {
+            let currentPID = appsCache.withLock { $0.currentPID }
             let candidatePIDs = NSWorkspace.shared.runningApplications.compactMap { app -> pid_t? in
-                guard app.activationPolicy == .regular, app.processIdentifier != apps.currentPID else { return nil }
+                guard app.activationPolicy == .regular, app.processIdentifier != currentPID else { return nil }
                 return app.processIdentifier
             }
 
-            for minimized in await Self.collectMinimizedWindows(pids: candidatePIDs) {
-                var windowID = minimized.windowID
-                var matched = windowID > 0 ? byWindowID[windowID] : nil
+            let collectedMinimized = await Self.collectMinimizedWindows(pids: candidatePIDs)
+            appsCache.withLock { apps in
+                for minimized in collectedMinimized {
+                    var windowID = minimized.windowID
+                    var matched = windowID > 0 ? byWindowID[windowID] : nil
 
-                if matched == nil, let candidates = byPID[minimized.pid] {
-                    matched = candidates.first { info in
-                        guard let id = Self.windowID(info), !seenIDs.contains(id) else { return false }
-                        return !minimized.title.isEmpty && info[kCGWindowName as String] as? String == minimized.title
-                    } ?? candidates.first { info in
-                        guard let id = Self.windowID(info) else { return false }
-                        return !seenIDs.contains(id)
+                    if matched == nil, let candidates = byPID[minimized.pid] {
+                        matched = candidates.first { info in
+                            guard let id = Self.windowID(info), !seenIDs.contains(id) else { return false }
+                            return !minimized.title.isEmpty && info[kCGWindowName as String] as? String == minimized.title
+                        } ?? candidates.first { info in
+                            guard let id = Self.windowID(info) else { return false }
+                            return !seenIDs.contains(id)
+                        }
+                        if let matched, let id = Self.windowID(matched) { windowID = id }
                     }
-                    if let matched, let id = Self.windowID(matched) { windowID = id }
+
+                    guard windowID > 0, seenIDs.insert(windowID).inserted else { continue }
+
+                    let bounds = matched.flatMap(Self.bounds) ?? minimized.bounds
+                    let appName = matched?[kCGWindowOwnerName as String] as? String
+                        ?? apps.name(for: minimized.pid)
+                        ?? "App"
+                    let title = minimized.title.isEmpty
+                        ? (matched?[kCGWindowName as String] as? String ?? "")
+                        : minimized.title
+
+                    Self.insertGrouped(
+                        WindowInfo(
+                            id: windowID,
+                            pid: minimized.pid,
+                            appName: appName,
+                            title: title,
+                            bounds: bounds,
+                            isMinimized: true,
+                            displayIndex: Self.displayIndex(for: bounds)
+                        ),
+                        into: &results
+                    )
                 }
-
-                guard windowID > 0, seenIDs.insert(windowID).inserted else { continue }
-
-                let bounds = matched.flatMap(Self.bounds) ?? minimized.bounds
-                let appName = matched?[kCGWindowOwnerName as String] as? String
-                    ?? apps.name(for: minimized.pid)
-                    ?? "App"
-                let title = minimized.title.isEmpty
-                    ? (matched?[kCGWindowName as String] as? String ?? "")
-                    : minimized.title
-
-                Self.insertGrouped(
-                    WindowInfo(
-                        id: windowID,
-                        pid: minimized.pid,
-                        appName: appName,
-                        title: title,
-                        bounds: bounds,
-                        isMinimized: true
-                    ),
-                    into: &results
-                )
             }
         }
 
         if showTabs || !currentSpaceOnly {
             var onScreenPIDs = Set(base.map(\.pid))
 
-            for info in allWindows {
-                guard let candidate = Candidate(info, minimumSide: 120, apps: &apps) else { continue }
-                if seenIDs.contains(candidate.id) { continue }
-                if candidate.title.isEmpty { continue }
-                if showTabs, currentSpaceOnly, !onScreenPIDs.contains(candidate.pid) { continue }
+            appsCache.withLock { apps in
+                for info in allWindows {
+                    guard let candidate = Candidate(info, minimumSide: 120, apps: &apps) else { continue }
+                    if seenIDs.contains(candidate.id) { continue }
+                    if candidate.title.isEmpty { continue }
+                    if showTabs, currentSpaceOnly, !onScreenPIDs.contains(candidate.pid) { continue }
 
-                seenIDs.insert(candidate.id)
-                onScreenPIDs.insert(candidate.pid)
-                Self.insertGrouped(candidate.windowInfo(isMinimized: false), into: &results)
+                    seenIDs.insert(candidate.id)
+                    onScreenPIDs.insert(candidate.pid)
+                    Self.insertGrouped(candidate.windowInfo(isMinimized: false), into: &results)
+                }
             }
         }
 
@@ -189,7 +212,7 @@ final class WindowManager: Sendable {
         return CGRect(dictionaryRepresentation: dictionary)
     }
 
-    private struct AppLookup {
+    private struct AppLookup: Sendable {
         let currentPID = ProcessInfo.processInfo.processIdentifier
         private var names: [pid_t: String?] = [:]
 
@@ -199,6 +222,10 @@ final class WindowManager: Sendable {
             let resolved = app?.activationPolicy == .regular ? (app?.localizedName ?? "App") : nil
             names[pid] = resolved
             return resolved
+        }
+
+        mutating func purge() {
+            names.removeAll()
         }
     }
 
@@ -232,7 +259,15 @@ final class WindowManager: Sendable {
         }
 
         func windowInfo(isMinimized: Bool) -> WindowInfo {
-            WindowInfo(id: id, pid: pid, appName: appName, title: title, bounds: bounds, isMinimized: isMinimized)
+            WindowInfo(
+                id: id,
+                pid: pid,
+                appName: appName,
+                title: title,
+                bounds: bounds,
+                isMinimized: isMinimized,
+                displayIndex: WindowManager.displayIndex(for: bounds)
+            )
         }
     }
 
@@ -326,15 +361,37 @@ final class WindowManager: Sendable {
             }
         }
 
-        guard !window.title.isEmpty else { return axWindows.first }
-
-        for axWindow in axWindows {
-            var titleRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef) == .success,
-               titleRef as? String == window.title {
-                return axWindow
+        if !window.title.isEmpty {
+            for axWindow in axWindows {
+                var titleRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef) == .success,
+                   titleRef as? String == window.title {
+                    return axWindow
+                }
             }
         }
+
+        // Critério de desempate por bounds: acha o elemento com geometria mais próxima
+        var bestMatch: AXUIElement?
+        var minDistance: CGFloat = .infinity
+
+        for axWindow in axWindows {
+            let frame = axFrame(of: axWindow)
+            let dx = frame.origin.x - window.bounds.origin.x
+            let dy = frame.origin.y - window.bounds.origin.y
+            let dw = frame.size.width - window.bounds.size.width
+            let dh = frame.size.height - window.bounds.size.height
+            let distance = dx * dx + dy * dy + dw * dw + dh * dh
+            if distance < minDistance {
+                minDistance = distance
+                bestMatch = axWindow
+            }
+        }
+
+        if minDistance < 10000 {
+            return bestMatch
+        }
+
         return axWindows.first
     }
 
@@ -367,6 +424,10 @@ final class WindowManager: Sendable {
         NSRunningApplication(processIdentifier: pid)?.terminate()
     }
 
+    func hideApplication(pid: pid_t) {
+        NSRunningApplication(processIdentifier: pid)?.hide()
+    }
+
     func close(window: WindowInfo) {
         performOnTargetAXWindow(for: window) { target in
             var closeButtonRef: CFTypeRef?
@@ -376,6 +437,27 @@ final class WindowManager: Sendable {
                 return
             }
             AXUIElementPerformAction(unsafeDowncast(closeButton as AnyObject, to: AXUIElement.self), kAXPressAction as CFString)
+        }
+    }
+
+    func toggleMinimize(window: WindowInfo) {
+        performOnTargetAXWindow(for: window) { target in
+            var minimizedRef: CFTypeRef?
+            let isMin = (AXUIElementCopyAttributeValue(target, kAXMinimizedAttribute as CFString, &minimizedRef) == .success)
+                && ((minimizedRef as? NSNumber)?.boolValue == true)
+            AXUIElementSetAttributeValue(target, kAXMinimizedAttribute as CFString, isMin ? kCFBooleanFalse : kCFBooleanTrue)
+        }
+    }
+
+    func toggleZoom(window: WindowInfo) {
+        performOnTargetAXWindow(for: window) { target in
+            var zoomButtonRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(target, kAXZoomButtonAttribute as CFString, &zoomButtonRef) == .success,
+                  let zoomButton = zoomButtonRef,
+                  CFGetTypeID(zoomButton) == AXUIElementGetTypeID() else {
+                return
+            }
+            AXUIElementPerformAction(unsafeDowncast(zoomButton as AnyObject, to: AXUIElement.self), kAXPressAction as CFString)
         }
     }
 
@@ -411,13 +493,15 @@ final class WindowManager: Sendable {
             let inFlight = min(Self.maxConcurrentCaptures, ordered.count)
 
             func schedule() {
-                guard next < ordered.count else { return }
+                guard next < ordered.count, !Task.isCancelled else { return }
                 let window = ordered[next]
                 next += 1
                 guard let match = scWindows[window.id] else { return }
                 let scWindow = Unchecked(match)
                 group.addTask { [self] in
+                    guard !Task.isCancelled else { return nil }
                     guard let image = await capture(scWindow.value, aspectOf: window.bounds) else { return nil }
+                    guard !Task.isCancelled else { return nil }
                     return (window.id, image)
                 }
             }

@@ -8,6 +8,10 @@ enum FuzzyMatch {
     private static let lengthPenaltyDivisor = 4
 
     static func score(query: [UInt8], candidate: [UInt8]) -> Int? {
+        score(query: ContiguousArray(query), candidate: ContiguousArray(candidate))
+    }
+
+    static func score(query: ContiguousArray<UInt8>, candidate: ContiguousArray<UInt8>) -> Int? {
         guard !query.isEmpty else { return 0 }
         guard query.count <= candidate.count else { return nil }
 
@@ -15,9 +19,9 @@ enum FuzzyMatch {
         var queryIndex = 0
         var previousMatch = -1
 
-        for (index, byte) in candidate.enumerated() {
+        for index in 0..<candidate.count {
             guard queryIndex < query.count else { break }
-            guard byte == query[queryIndex] else { continue }
+            guard candidate[index] == query[queryIndex] else { continue }
 
             total += characterScore
             if index == 0 {
@@ -48,3 +52,4 @@ enum FuzzyMatch {
         }
     }
 }
+

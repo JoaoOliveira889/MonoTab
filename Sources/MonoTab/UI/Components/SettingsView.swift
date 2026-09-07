@@ -5,6 +5,14 @@ struct SettingsView: View {
     private let permissions = PermissionsManager.shared
     let onClose: () -> Void
 
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0"
+    }
+
+    private var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "4"
+    }
+
     init(onClose: @escaping () -> Void) {
         self.onClose = onClose
     }
@@ -20,6 +28,13 @@ struct SettingsView: View {
                     Text("Preferences")
                         .font(.system(size: 15, weight: .bold, design: .rounded))
                         .foregroundColor(.primary)
+
+                    Text("v\(appVersion)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .glassBadge()
                 }
 
                 Spacer()
@@ -97,6 +112,36 @@ struct SettingsView: View {
                             }
                             .pickerStyle(.segmented)
                             .frame(width: 190)
+                        }
+
+                        Divider().opacity(0.15)
+
+                        SettingsRow(
+                            icon: "display.2",
+                            iconColor: .cyan,
+                            title: "Active Display",
+                            subtitle: "Where MonoTab should appear on multi-monitor setups."
+                        ) {
+                            Picker("", selection: $preferences.screenTarget) {
+                                ForEach(ScreenTargetPreference.allCases) { target in
+                                    Text(target.displayName).tag(target)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 200)
+                        }
+
+                        Divider().opacity(0.15)
+
+                        SettingsRow(
+                            icon: "number.circle.fill",
+                            iconColor: .pink,
+                            title: "Quick Numbers (1-9)",
+                            subtitle: "Display jump badges on the first nine window cards."
+                        ) {
+                            Toggle("", isOn: $preferences.showQuickShortcuts)
+                                .toggleStyle(.switch)
+                                .labelsHidden()
                         }
                     }
 
@@ -182,7 +227,7 @@ struct SettingsView: View {
                         .font(.system(size: 13))
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("100% Local & Private")
+                        Text("MonoTab v\(appVersion) (Build \(buildNumber)) • 100% Local")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.primary)
                         Text("Zero telemetry. Thumbnails kept only in RAM.")

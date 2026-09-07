@@ -50,7 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate 
     }
 
     func hotkeyDidTriggerOpen() {
-        SwitcherPanelController.shared.show()
+        SwitcherPanelController.shared.show(appOnly: false)
+    }
+
+    func hotkeyDidTriggerAppOnlyOpen() {
+        SwitcherPanelController.shared.show(appOnly: true)
     }
 
     func hotkeyDidCycleNext() {
@@ -58,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate 
         if controller.isVisible {
             controller.viewModel.selectNext()
         } else {
-            controller.show()
+            controller.show(appOnly: false)
         }
     }
 
@@ -67,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate 
         if controller.isVisible {
             controller.viewModel.selectPrevious()
         } else {
-            controller.show()
+            controller.show(appOnly: false)
         }
     }
 
@@ -95,5 +99,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, HotkeyManagerDelegate 
 
     func hotkeyDidQuitSelectedApp() {
         SwitcherPanelController.shared.quitSelectedApp()
+    }
+
+    func hotkeyDidTriggerQuickSelect(number: Int) {
+        SwitcherPanelController.shared.quickSelect(number: number)
+    }
+
+    func hotkeyDidTogglePreview() {
+        SwitcherPanelController.shared.viewModel.togglePreview()
+    }
+
+    func hotkeyDidToggleMinimize() {
+        SwitcherPanelController.shared.toggleMinimizeSelected()
+    }
+
+    func hotkeyDidToggleZoom() {
+        SwitcherPanelController.shared.toggleZoomSelected()
+    }
+
+    func hotkeyDidHideSelectedApp() {
+        SwitcherPanelController.shared.hideSelectedApp()
     }
 }

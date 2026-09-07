@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/JoaoOliveira889/MonoTab/releases"><img src="https://img.shields.io/badge/version-v1.2.0-brightgreen" alt="Version v1.2.0" /></a>
+  <a href="https://github.com/JoaoOliveira889/MonoTab/releases"><img src="https://img.shields.io/badge/version-v1.3.0-brightgreen" alt="Version v1.3.0" /></a>
   <a href="https://apple.com/macos"><img src="https://img.shields.io/badge/macOS-26.0%2B-blue?logo=apple" alt="macOS 26+" /></a>
   <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-6.0%2B-orange?logo=swift" alt="Swift 6.0+" /></a>
   <img src="https://img.shields.io/badge/Architecture-Apple%20Silicon%20(arm64)%20Only-purple" alt="Apple Silicon (arm64) Only" />
@@ -52,14 +52,23 @@ Free and open-source software under the **MIT License**.
   - Press `f` or `/` during navigation to open search immediately.
   - Releasing modifier keys (⌥ / ⌘) in search mode **keeps MonoTab open**, allowing natural two-handed typing.
   - Press `Escape` to clear search or exit; press `Enter` to focus the matched window.
+- **App-Only Switcher Mode (`⌥ \`` / `⌘ \`)**:
+  - Quickly filter and cycle exclusively through windows belonging to the frontmost application.
+- **Quick Look Window Preview (`Space`)**:
+  - Tap Spacebar on any window card to open an instant, high-definition centered preview modal with full metadata and switching controls.
+- **Direct Numeric Quick Jump (`1` to `9`)**:
+  - Direct selection badges on the first 9 window cards allow instant 1-keystroke activation without navigation.
+- **Window Management Actions**:
+  - **`w`**: Close selected window via Accessibility API.
+  - **`m`**: Minimize or restore window to/from Dock.
+  - **`z`**: Zoom / maximize window.
+  - **`⌘Q`**: Terminate the selected application gracefully via Apple Event.
+- **Ultra-Fluid 120 FPS Animations (ProMotion Native)**:
+  - Hardware-accelerated GPU transitions, non-blocking CoreAnimation window resizing, jitter-free scroll alignment, and instant glowing focus states with zero frame drops.
 - **Menu Bar Item**:
   - Reaches Preferences and Quit even when the Accessibility permission that powers the hotkey is missing. Can be hidden from Preferences.
 - **Fuzzy Search**:
   - Subsequence matching with scoring — `vsc` finds `Visual Studio Code`. Results are ranked, so the best match sits under the initial selection.
-- **Quit an App (`⌘Q`)**:
-  - Sends the standard Quit Apple Event to the selected window's application, so it still gets to prompt about unsaved work.
-- **Instant Window Close (`w`)**:
-  - Close background or active windows directly from the switcher grid using the `w` key or the hover close button (`×`), without needing to switch to the window first.
 - **Launch at Login**:
   - Native auto-start toggle integrated directly with macOS `SMAppService` and System Settings.
 - **Floating & Fullscreen Modes**:
@@ -148,16 +157,19 @@ When MonoTab opens for the first time, a setup banner will guide you to enable e
 
 | Shortcut | Context | Action |
 | :--- | :--- | :--- |
-| **`⌥ Tab`** or **`⌘ Tab`** | System-wide | Open MonoTab and cycle to next window |
-| **`⇧ + ⇥`** *(Shift + Tab)* | Switcher visible | Cycle to previous window |
-| **Release `⌥` / `⌘`** | Switcher visible | Confirm selection and focus window immediately |
-| **`w`** | Switcher visible | Close selected window via Accessibility API |
-| **`⌘ Q`** | Switcher visible | Quit selected application via Apple Event |
-| **`f`** or **`/`** | Switcher visible | Enter Search Mode (keeps window open without holding keys) |
+| **`⌥ Tab`** or **`⌘ Tab`** | System-wide | Open MonoTab switcher |
+| **`⌥ \``** or **`⌘ \``** | System-wide | Open MonoTab in **App-Only** mode (frontmost app windows) |
 | **`↑ ↓ ← →`** | Switcher visible | Navigate window grid |
 | **`h j k l`** | Switcher visible | Vim navigation (Left, Down, Up, Right) |
-| **`⏎`** *(Enter)* | Switcher / Search | Focus selected window and close switcher |
-| **`⎋`** *(Escape)* | Switcher visible | Dismiss switcher / Exit search mode / Close settings |
+| **`1` – `9`** | Switcher visible | Quick jump to window by index number |
+| **`Space`** | Switcher visible | Toggle full-size **Quick Look** window preview |
+| **`w`** | Switcher visible | Close selected window via Accessibility API |
+| **`m`** | Switcher visible | Minimize or unminimize selected window |
+| **`z`** | Switcher visible | Zoom / maximize selected window |
+| **`⌘ Q`** | Switcher visible | Quit selected application via Apple Event |
+| **`f`** or **`/`** | Switcher visible | Enter Search Mode (keeps window open without holding keys) |
+| **`⏎`** *(Enter)* | Switcher / Search | Focus selected window and dismiss switcher |
+| **`⎋`** *(Escape)* | Switcher visible | Dismiss switcher / Exit search mode / Close preview |
 | **`⌘ ,`** | Switcher visible | Open Preferences modal |
 
 ---

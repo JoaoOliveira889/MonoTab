@@ -19,6 +19,7 @@ DerivedData/
 /MonoTab.app
 *.dSYM/
 *.dSYM.zip
+*.zip
 *.o
 *.dylib
 
@@ -67,3 +68,6 @@ tmp/
 *.swo
 *~
 *.bak
+
+# AI assistant
+CLAUDE.md

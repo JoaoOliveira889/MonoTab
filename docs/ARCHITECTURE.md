@@ -52,7 +52,7 @@ view only re-renders for the exact properties it reads.
 - **Mechanism**: Low-level session event tap created via `CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap, ...)`.
 - **Event Mask**: Subscribes only to `keyDown` and `flagsChanged`.
 - **Zero Keylogger Guarantee**:
-  - Keys are inspected strictly to match configured activation shortcuts (`⌥ Tab`, `⌘ Tab`), navigation (`↑ ↓ ← →`, `h j k l`), search trigger (`f`, `/`), confirmation (`Return`), or cancellation (`Escape`).
+  - Keys are inspected strictly to match configured activation shortcuts (`⌥ Tab`, `⌘ Tab`), App-Only mode (`⌥ \``, `⌘ \``), navigation (`↑ ↓ ← →`, `h j k l`), quick jump (`1`–`9`), Quick Look preview (`Space`), window actions (`m`, `z`, `w`), search trigger (`f`, `/`), confirmation (`Return`), or cancellation (`Escape`).
   - All non-matching keystrokes pass through untouched via `Unmanaged.passRetained(event)`.
   - Keystrokes are never recorded, buffered, or stored.
 - **Thread Safety**: State transitions (`isOverlayVisible`, `isSearchMode`, `isSettingsOpen`, `shortcut`, `activeModifier`) live in a single struct guarded by `Synchronization.Mutex`.
@@ -77,8 +77,8 @@ view only re-renders for the exact properties it reads.
 
 ### 4. Window Focusing, Closing & Restoration
 - **Process Activation**: `NSRunningApplication.activate()` brings the target process to the foreground.
-- **Accessibility Inspection**: `AXUIElementCreateApplication` and `kAXWindowsAttribute` locate the window by exact `CGWindowID` (one Accessibility call per window), falling back to a title comparison only when the id lookup is unavailable.
-- **Non-blocking**: Focus and close run on a detached task with a 0.5 s Accessibility messaging timeout, so an unresponsive target cannot stall the UI.
+- **Accessibility Inspection**: `AXUIElementCreateApplication` and `kAXWindowsAttribute` locate the window by exact `CGWindowID` (one Accessibility call per window), falling back to geometric distance desempate between `window.bounds` and `axFrame`.
+- **Non-blocking**: Focus, minimize, zoom, and close run on detached tasks with Accessibility messaging timeouts, so an unresponsive target cannot stall the UI.
 - **Restoration**: If the window was minimized to the Dock, `kAXMinimizedAttribute` is set to `kCFBooleanFalse`.
 - **Elevation**: `kAXRaiseAction` elevates the target window above all other desktop layers.
 - **Window Closing**: `kAXCloseButtonAttribute` and `AXUIElementPerformAction(..., kAXPressAction)` simulate clicking the window's close button natively without terminating the application.
@@ -86,9 +86,10 @@ view only re-renders for the exact properties it reads.
 ### 5. Launch at Login Integration
 - **ServiceManagement**: Uses `SMAppService.mainApp` to register and unregister MonoTab directly with macOS System Settings (Login Items).
 
-### 6. Liquid Glass Design System (`GlassStyle`)
+### 6. Liquid Glass Design System (`GlassStyle`) & 120 FPS Fluidity
 - **Native Glass**: macOS 26 renders Liquid Glass itself, so panel chrome, badges and the search field use `glassEffect(_:in:)`. Header controls share one `GlassEffectContainer` so they merge into a single render pass.
 - **No Glass On Glass**: Cards sit *on* the glass panel and deliberately opt out — a second glass layer per card would read wrong and cost one blur pass each. They use `Color.primary`-relative fills, which also makes light mode correct.
 - **Continuous Bevels**: All panels, cards, and capsules use Apple continuous squircles (`RoundedRectangle(..., style: .continuous)`).
 - **Rim Lighting**: Multi-stop specular gradients trace borders to replicate frosted glass optics under varying desktop wallpaper backgrounds.
-- **Selection Halo**: Active cards display an interior radial glow and high-contrast accent border with smooth spring physics (`.spring(response: 0.22, dampingFraction: 0.8)`).
+- **Instant Selection Feedback**: Active cards display an interior radial glow, glowing shadow and high-contrast accent border with fast, fluid response (`.easeOut(duration: 0.10)`), completely eliminating texture re-rasterization jitter from heavy GPU scale transforms.
+- **Non-Blocking Core Animation Framing**: Window layout transitions between Fullscreen and Floating modes use `panel.animator().setFrame(...)` in `NSAnimationContext.runAnimationGroup`, coordinating smoothly with macOS window server without modal runloop stalling.

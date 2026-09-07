@@ -28,17 +28,17 @@ extension View {
             ZStack {
                 shape.fill(
                     isSelected
-                        ? Color.accentColor.opacity(0.22)
-                        : Color.primary.opacity(isHovered ? 0.09 : 0.04)
+                        ? Color.accentColor.opacity(0.24)
+                        : Color.primary.opacity(isHovered ? 0.08 : 0.035)
                 )
 
                 if isSelected {
                     shape.fill(
                         RadialGradient(
-                            colors: [Color.accentColor.opacity(0.28), .clear],
+                            colors: [Color.accentColor.opacity(0.32), .clear],
                             center: .center,
-                            startRadius: 15,
-                            endRadius: 120
+                            startRadius: 20,
+                            endRadius: 130
                         )
                     )
                 }
@@ -47,13 +47,18 @@ extension View {
         .clipShape(shape)
         .overlay {
             shape.strokeBorder(
-                isSelected ? Color.accentColor.opacity(0.9) : Color.primary.opacity(isHovered ? 0.24 : 0.10),
+                isSelected ? Color.accentColor : Color.primary.opacity(isHovered ? 0.24 : 0.10),
                 lineWidth: isSelected ? 2 : 1
             )
         }
-        .scaleEffect(isSelected ? 1.025 : 1.0)
-        .animation(.spring(response: 0.22, dampingFraction: 0.8), value: isSelected)
-        .animation(.easeInOut(duration: 0.12), value: isHovered)
+        .shadow(
+            color: isSelected ? Color.accentColor.opacity(0.35) : Color.clear,
+            radius: 8,
+            x: 0,
+            y: 2
+        )
+        .animation(.easeOut(duration: 0.10), value: isSelected)
+        .animation(.easeOut(duration: 0.10), value: isHovered)
     }
 
     func surfaceTile(cornerRadius: CGFloat) -> some View {

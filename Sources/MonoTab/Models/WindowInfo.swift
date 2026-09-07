@@ -8,11 +8,12 @@ struct WindowInfo: Identifiable, Hashable, Sendable {
     let title: String
     let bounds: CGRect
     let isMinimized: Bool
+    let displayIndex: Int?
 
     private static let appNameWeight = 20
 
-    private let appNameBytes: [UInt8]
-    private let titleBytes: [UInt8]
+    private let appNameBytes: ContiguousArray<UInt8>
+    private let titleBytes: ContiguousArray<UInt8>
 
     init(
         id: CGWindowID,
@@ -20,7 +21,8 @@ struct WindowInfo: Identifiable, Hashable, Sendable {
         appName: String,
         title: String,
         bounds: CGRect,
-        isMinimized: Bool = false
+        isMinimized: Bool = false,
+        displayIndex: Int? = nil
     ) {
         self.id = id
         self.pid = pid
@@ -28,8 +30,9 @@ struct WindowInfo: Identifiable, Hashable, Sendable {
         self.title = title
         self.bounds = bounds
         self.isMinimized = isMinimized
-        self.appNameBytes = Array(appName.lowercased().utf8)
-        self.titleBytes = Array(title.lowercased().utf8)
+        self.displayIndex = displayIndex
+        self.appNameBytes = ContiguousArray(appName.lowercased().utf8)
+        self.titleBytes = ContiguousArray(title.lowercased().utf8)
     }
 
     var displayTitle: String {
@@ -37,6 +40,10 @@ struct WindowInfo: Identifiable, Hashable, Sendable {
     }
 
     func matchScore(normalizedQuery query: [UInt8]) -> Int? {
+        matchScore(normalizedQuery: ContiguousArray(query))
+    }
+
+    func matchScore(normalizedQuery query: ContiguousArray<UInt8>) -> Int? {
         guard !query.isEmpty else { return 0 }
 
         let appScore = FuzzyMatch.score(query: query, candidate: appNameBytes).map { $0 + Self.appNameWeight }
@@ -56,6 +63,10 @@ struct WindowInfo: Identifiable, Hashable, Sendable {
 
     static func normalize(_ query: String) -> [UInt8] {
         Array(query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().utf8)
+    }
+
+    static func normalizeBytes(_ query: String) -> ContiguousArray<UInt8> {
+        ContiguousArray(query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().utf8)
     }
 
     static func == (lhs: WindowInfo, rhs: WindowInfo) -> Bool {
