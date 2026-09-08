@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/JoaoOliveira889/MonoTab/releases"><img src="https://img.shields.io/badge/version-v1.3.0-brightgreen" alt="Version v1.3.0" /></a>
+  <a href="https://github.com/JoaoOliveira889/MonoTab/releases"><img src="https://img.shields.io/badge/version-v0.0.1-brightgreen" alt="Version v0.0.1" /></a>
   <a href="https://apple.com/macos"><img src="https://img.shields.io/badge/macOS-26.0%2B-blue?logo=apple" alt="macOS 26+" /></a>
   <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-6.0%2B-orange?logo=swift" alt="Swift 6.0+" /></a>
   <img src="https://img.shields.io/badge/Architecture-Apple%20Silicon%20(arm64)%20Only-purple" alt="Apple Silicon (arm64) Only" />

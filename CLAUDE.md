@@ -47,6 +47,6 @@ Latency-sensitive invariants worth preserving:
 ## Conventions
 
 - The app needs Accessibility and Screen Recording permissions; degrade gracefully and surface `PermissionsBannerView` instead of failing silently. `Resources/Entitlements.plist` is applied at codesign time.
-- Version lives in `Resources/Info.plist` plus the README badges.
+- Version lives in `Sources/MonoTab/Models/AppVersion.swift`, `Resources/Info.plist`, and `README.md`. Always follow [`RULES.md`](./RULES.md) for SemVer increments on each new release.
 - `make app` signs with Hardened Runtime (`--options=runtime`). MonoTab is deliberately **not** App Sandboxed — the sandbox is incompatible with Accessibility and cross-app screen capture.
 - See `PRIVACY.md` — no data collection.

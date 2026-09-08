@@ -6,11 +6,11 @@ struct SettingsView: View {
     let onClose: () -> Void
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? AppInfo.version
     }
 
     private var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "4"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? AppInfo.build
     }
 
     init(onClose: @escaping () -> Void) {
