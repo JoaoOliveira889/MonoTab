@@ -1,15 +1,9 @@
-import Foundation
-
-enum FuzzyMatch {
+nonisolated enum FuzzyMatch {
     private static let startBonus = 12
     private static let boundaryBonus = 10
     private static let consecutiveBonus = 8
     private static let characterScore = 1
     private static let lengthPenaltyDivisor = 4
-
-    static func score(query: [UInt8], candidate: [UInt8]) -> Int? {
-        score(query: ContiguousArray(query), candidate: ContiguousArray(candidate))
-    }
 
     static func score(query: ContiguousArray<UInt8>, candidate: ContiguousArray<UInt8>) -> Int? {
         guard !query.isEmpty else { return 0 }
@@ -52,4 +46,3 @@ enum FuzzyMatch {
         }
     }
 }
-

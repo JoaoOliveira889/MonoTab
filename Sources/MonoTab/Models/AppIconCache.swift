@@ -1,6 +1,5 @@
 import AppKit
 
-@MainActor
 enum AppIconCache {
     private static var icons: [pid_t: NSImage] = [:]
 

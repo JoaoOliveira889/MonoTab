@@ -1,31 +1,15 @@
 import AppKit
 import ApplicationServices
+import CoreGraphics
+import Foundation
 import Synchronization
 
 @MainActor
 protocol HotkeyManagerDelegate: AnyObject {
-    func hotkeyDidTriggerOpen()
-    func hotkeyDidTriggerAppOnlyOpen()
-    func hotkeyDidCycleNext()
-    func hotkeyDidCyclePrevious()
-    func hotkeyDidConfirm()
-    func hotkeyDidCancel()
-    func hotkeyDidNavigate(direction: HotkeyManager.NavigationDirection)
-    func hotkeyDidEnterSearchMode()
-    func hotkeyDidCloseSelectedWindow()
-    func hotkeyDidQuitSelectedApp()
-    func hotkeyDidTriggerQuickSelect(number: Int)
-    func hotkeyDidTogglePreview()
-    func hotkeyDidToggleMinimize()
-    func hotkeyDidToggleZoom()
-    func hotkeyDidHideSelectedApp()
+    func perform(_ action: HotkeyAction)
 }
 
-final class HotkeyManager: Sendable {
-    enum NavigationDirection: Sendable {
-        case left, right, up, down
-    }
-
+nonisolated final class HotkeyManager: Sendable {
     private enum TriggerModifier: Sendable {
         case option
         case command
@@ -41,6 +25,7 @@ final class HotkeyManager: Sendable {
         static let w: Int64 = 13
         static let q: Int64 = 12
         static let f: Int64 = 3
+        static let n: Int64 = 45
         static let slash: Int64 = 44
         static let m: Int64 = 46
         static let z: Int64 = 6
@@ -48,25 +33,28 @@ final class HotkeyManager: Sendable {
         static let j: Int64 = 38
         static let k: Int64 = 40
         static let l: Int64 = 37
-        static let key1: Int64 = 18
-        static let key2: Int64 = 19
-        static let key3: Int64 = 20
-        static let key4: Int64 = 21
-        static let key5: Int64 = 23
-        static let key6: Int64 = 22
-        static let key7: Int64 = 26
-        static let key8: Int64 = 28
-        static let key9: Int64 = 25
+        static let leftBracket: Int64 = 33
+        static let rightBracket: Int64 = 30
         static let arrowLeft: Int64 = 123
         static let arrowRight: Int64 = 124
         static let arrowDown: Int64 = 125
         static let arrowUp: Int64 = 126
     }
 
+    private static let quickSelectKeys: [Int64: Int] = [
+        18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9
+    ]
+
+    private static let navigationKeys: [Int64: NavigationDirection] = [
+        KeyCode.arrowUp: .up, KeyCode.k: .up,
+        KeyCode.arrowDown: .down, KeyCode.j: .down,
+        KeyCode.arrowLeft: .left, KeyCode.h: .left,
+        KeyCode.arrowRight: .right, KeyCode.l: .right
+    ]
+
     private struct State {
         var isOverlayVisible = false
-        var isSearchMode = false
-        var isSettingsOpen = false
+        var isTextEntryActive = false
         var shortcut: ShortcutPreference = .both
         var activeModifier: TriggerModifier?
     }
@@ -82,6 +70,7 @@ final class HotkeyManager: Sendable {
     private init() {}
 
     @MainActor
+    @discardableResult
     func start() -> Bool {
         stop()
 
@@ -125,11 +114,10 @@ final class HotkeyManager: Sendable {
         runLoopSource = nil
     }
 
-    func updateOverlayState(isVisible: Bool, isSearchMode: Bool, isSettingsOpen: Bool) {
+    func updateOverlayState(isVisible: Bool, isTextEntryActive: Bool) {
         state.withLock {
             $0.isOverlayVisible = isVisible
-            $0.isSearchMode = isSearchMode
-            $0.isSettingsOpen = isSettingsOpen
+            $0.isTextEntryActive = isTextEntryActive
             if !isVisible { $0.activeModifier = nil }
         }
     }
@@ -144,6 +132,11 @@ final class HotkeyManager: Sendable {
         } else {
             DispatchQueue.main.async { MainActor.assumeIsolated(body) }
         }
+    }
+
+    private func send(_ action: HotkeyAction) -> Unmanaged<CGEvent>? {
+        onMain { [self] in delegate?.perform(action) }
+        return nil
     }
 
     private func handleEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -178,11 +171,16 @@ final class HotkeyManager: Sendable {
 
         state.withLock { $0.activeModifier = nil }
 
-        guard snapshot.isOverlayVisible, !snapshot.isSearchMode, !snapshot.isSettingsOpen else {
+        guard snapshot.isOverlayVisible, !snapshot.isTextEntryActive else {
             return Unmanaged.passRetained(event)
         }
 
-        onMain { [self] in delegate?.hotkeyDidConfirm() }
+        return send(.confirm)
+    }
+
+    private func trigger(for flags: CGEventFlags, mode: ShortcutPreference) -> TriggerModifier? {
+        if flags.contains(.maskAlternate), mode == .optionTab || mode == .both { return .option }
+        if flags.contains(.maskCommand), mode == .commandTab || mode == .both { return .command }
         return nil
     }
 
@@ -190,100 +188,72 @@ final class HotkeyManager: Sendable {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
         let mode = snapshot.shortcut
+        let hasShift = flags.contains(.maskShift)
 
         if keyCode == KeyCode.tab {
-            let trigger: TriggerModifier?
-            if flags.contains(.maskAlternate), mode == .optionTab || mode == .both {
-                trigger = .option
-            } else if flags.contains(.maskCommand), mode == .commandTab || mode == .both {
-                trigger = .command
-            } else {
-                trigger = nil
-            }
-
-            if let trigger {
+            if let trigger = trigger(for: flags, mode: mode) {
                 state.withLock { $0.activeModifier = trigger }
-                let wasVisible = snapshot.isOverlayVisible
-                if !wasVisible {
-                    onMain { [self] in delegate?.hotkeyDidTriggerOpen() }
+                if snapshot.isOverlayVisible {
+                    return send(.cycle(forward: !hasShift))
                 }
-                return nil
+                return send(.open(appOnly: false))
             }
 
             if snapshot.isOverlayVisible {
-                return nil
+                return send(.cycle(forward: !hasShift))
             }
         }
 
-        if keyCode == KeyCode.backtick {
-            if flags.contains(.maskAlternate) || flags.contains(.maskCommand) {
-                let trigger: TriggerModifier = flags.contains(.maskAlternate) ? .option : .command
-                state.withLock { $0.activeModifier = trigger }
-                let wasVisible = snapshot.isOverlayVisible
-                if !wasVisible {
-                    onMain { [self] in delegate?.hotkeyDidTriggerAppOnlyOpen() }
-                }
-                return nil
+        if keyCode == KeyCode.backtick, let trigger = trigger(for: flags, mode: mode) {
+            state.withLock { $0.activeModifier = trigger }
+            if snapshot.isOverlayVisible {
+                return send(.cycle(forward: !hasShift))
             }
+            return send(.open(appOnly: true))
         }
 
         guard snapshot.isOverlayVisible else { return Unmanaged.passRetained(event) }
 
         switch keyCode {
         case KeyCode.returnKey, KeyCode.keypadEnter:
-            onMain { [self] in delegate?.hotkeyDidConfirm() }
-            return nil
+            return send(.confirm)
         case KeyCode.escape:
-            onMain { [self] in delegate?.hotkeyDidCancel() }
-            return nil
+            return send(.cancel)
         default:
             break
         }
 
-        guard !snapshot.isSearchMode, !snapshot.isSettingsOpen else {
-            return Unmanaged.passRetained(event)
+        guard !snapshot.isTextEntryActive else { return Unmanaged.passRetained(event) }
+
+        if let direction = Self.navigationKeys[keyCode] {
+            return send(.navigate(direction))
+        }
+
+        if let number = Self.quickSelectKeys[keyCode] {
+            return send(.quickSelect(number))
         }
 
         switch keyCode {
-        case KeyCode.arrowUp, KeyCode.k:
-            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .up) }
-            return nil
-        case KeyCode.arrowDown, KeyCode.j:
-            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .down) }
-            return nil
-        case KeyCode.arrowLeft, KeyCode.h:
-            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .left) }
-            return nil
-        case KeyCode.arrowRight, KeyCode.l:
-            onMain { [self] in delegate?.hotkeyDidNavigate(direction: .right) }
-            return nil
         case KeyCode.space:
-            onMain { [self] in delegate?.hotkeyDidTogglePreview() }
-            return nil
-        case KeyCode.key1: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 1) }; return nil
-        case KeyCode.key2: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 2) }; return nil
-        case KeyCode.key3: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 3) }; return nil
-        case KeyCode.key4: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 4) }; return nil
-        case KeyCode.key5: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 5) }; return nil
-        case KeyCode.key6: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 6) }; return nil
-        case KeyCode.key7: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 7) }; return nil
-        case KeyCode.key8: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 8) }; return nil
-        case KeyCode.key9: onMain { [self] in delegate?.hotkeyDidTriggerQuickSelect(number: 9) }; return nil
+            return send(.togglePreview)
         case KeyCode.m:
-            onMain { [self] in delegate?.hotkeyDidToggleMinimize() }
-            return nil
+            return send(.toggleMinimize)
         case KeyCode.z:
-            onMain { [self] in delegate?.hotkeyDidToggleZoom() }
-            return nil
+            return send(.toggleZoom)
+        case KeyCode.n:
+            return send(.moveToNextDisplay)
+        case KeyCode.leftBracket:
+            return send(.tile(.left))
+        case KeyCode.rightBracket:
+            return send(.tile(.right))
         case KeyCode.q where flags.contains(.maskCommand):
-            onMain { [self] in delegate?.hotkeyDidQuitSelectedApp() }
-            return nil
+            return send(.quitApp)
         case KeyCode.w:
-            onMain { [self] in delegate?.hotkeyDidCloseSelectedWindow() }
-            return nil
+            return send(hasShift ? .hideApp : .closeWindow)
+        case KeyCode.slash where hasShift:
+            return send(.toggleHelp)
         case KeyCode.f, KeyCode.slash:
-            onMain { [self] in delegate?.hotkeyDidEnterSearchMode() }
-            return nil
+            return send(.enterSearch)
         default:
             return Unmanaged.passRetained(event)
         }

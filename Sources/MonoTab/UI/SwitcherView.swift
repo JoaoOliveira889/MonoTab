@@ -8,6 +8,8 @@ struct SwitcherView: View {
     let onCancel: () -> Void
     let onLayoutChange: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     init(
         viewModel: SwitcherViewModel,
         onConfirm: @escaping () -> Void,
@@ -24,122 +26,157 @@ struct SwitcherView: View {
         preferences.displayMode == .fullscreen
     }
 
-    private var cardWidth: CGFloat { isFullscreen ? 278 : 264 }
-    private var cardHeight: CGFloat { isFullscreen ? 172 : 162 }
+    private var accent: Color {
+        preferences.accent.color
+    }
 
-    private var coversScreen: Bool {
-        isFullscreen || viewModel.isSettingsOpen || viewModel.isPreviewOpen
+    private var cardSize: CGSize {
+        SwitcherMetrics.card(isFullscreen: isFullscreen)
     }
 
     var body: some View {
-        let columnCount = viewModel.columnCount(isFullscreen: isFullscreen)
-
         ZStack {
-            if coversScreen {
+            if isFullscreen {
                 backdrop
             }
 
-            VStack(spacing: 12) {
-                header
-                    .padding(.horizontal, 18)
-                    .padding(.top, 16)
-
-                if viewModel.isSearchMode {
-                    SearchBarView(
-                        text: $viewModel.searchQuery,
-                        isSearchMode: $viewModel.isSearchMode,
-                        onExit: { withAnimation(.easeInOut(duration: 0.18)) { viewModel.exitSearchMode() } }
-                    )
-                    .padding(.horizontal, 18)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-
-                PermissionsBannerView()
-                    .padding(.horizontal, 18)
-
-                WindowGrid(
-                    viewModel: viewModel,
-                    columnCount: columnCount,
-                    cardWidth: cardWidth,
-                    cardHeight: cardHeight,
-                    isFullscreen: isFullscreen,
-                    onConfirm: onConfirm
-                )
-
-                ShortcutLegend(shortcut: preferences.shortcut, isFullscreen: isFullscreen)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 14)
-                    .padding(.top, 2)
+            if let sheet = viewModel.activeSheet, !isFullscreen {
+                sheetView(sheet)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+            } else {
+                mainPanel
             }
-            .frame(
-                minWidth: isFullscreen ? 1080 : min(860, max(680, CGFloat(columnCount) * (cardWidth + 20) + 72)),
-                maxWidth: isFullscreen
-                    ? min(2050, max(1080, CGFloat(columnCount) * (cardWidth + 24) + 100))
-                    : min(1600, max(860, CGFloat(columnCount) * (cardWidth + 20) + 80))
-            )
-            .glassPanel(cornerRadius: 24)
-            .shadow(color: Color.black.opacity(0.42), radius: 30, x: 0, y: 15)
 
-            if viewModel.isPreviewOpen, let selected = viewModel.selectedWindow {
-                Color.black.opacity(0.45)
-                    .ignoresSafeArea()
-                    .transition(.opacity)
-                    .onTapGesture { viewModel.closePreview() }
+            if isFullscreen, let sheet = viewModel.activeSheet {
+                dimmingLayer(opacity: 0.45) { handleBackdropTap() }
+                sheetView(sheet)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+                    .zIndex(10)
+            }
 
+            if let confirmation = viewModel.pendingConfirmation {
+                dimmingLayer(opacity: 0.5) { viewModel.pendingConfirmation = nil }
+                ConfirmationOverlayView(
+                    confirmation: confirmation,
+                    onConfirm: {
+                        viewModel.pendingConfirmation = nil
+                        confirmation.perform()
+                    },
+                    onCancel: { viewModel.pendingConfirmation = nil }
+                )
+                .transition(.scale(scale: 0.94).combined(with: .opacity))
+                .zIndex(20)
+            }
+        }
+        .frame(
+            maxWidth: isFullscreen ? .infinity : nil,
+            maxHeight: isFullscreen ? .infinity : nil
+        )
+        .environment(\.monoAccent, accent)
+        .environment(\.monoReduceMotion, reduceMotion)
+        .tint(accent)
+        .monoAnimation(.smooth(duration: 0.22), value: isFullscreen, enabled: !reduceMotion)
+        .monoAnimation(.smooth(duration: 0.18), value: viewModel.isSearchMode, enabled: !reduceMotion)
+        .monoAnimation(.smooth(duration: 0.20), value: viewModel.activeSheet != nil, enabled: !reduceMotion)
+        .monoAnimation(.smooth(duration: 0.18), value: viewModel.pendingConfirmation?.id, enabled: !reduceMotion)
+        .onChange(of: viewModel.activeSheet != nil) { _, _ in onLayoutChange() }
+        .onChange(of: preferences.displayMode) { _, _ in onLayoutChange() }
+        .onChange(of: viewModel.isSearchMode) { _, _ in onLayoutChange() }
+        .onChange(of: viewModel.filteredWindows.count) { _, _ in onLayoutChange() }
+    }
+
+    @ViewBuilder
+    private func sheetView(_ sheet: SwitcherSheet) -> some View {
+        switch sheet {
+        case .settings:
+            SettingsView(onClose: { viewModel.closeSettings() })
+        case .help:
+            HelpOverlayView(onClose: { viewModel.closeHelp() })
+        case .preview:
+            if let selected = viewModel.selectedWindow {
                 QuickLookView(
                     window: selected,
                     slot: viewModel.slot(for: selected.id),
                     onClose: { viewModel.closePreview() },
                     onConfirm: onConfirm
                 )
-                .transition(.scale(scale: 0.94).combined(with: .opacity))
-                .zIndex(15)
-            }
-
-            if viewModel.isSettingsOpen {
-                Color.black.opacity(0.4)
-                    .ignoresSafeArea()
-                    .transition(.opacity)
-                    .onTapGesture { dismissSettings() }
-
-                SettingsView(onClose: dismissSettings)
-                    .transition(.scale(scale: 0.95).combined(with: .opacity))
-                    .zIndex(10)
             }
         }
+    }
+
+    private var mainPanel: some View {
+        let columnCount = viewModel.columnCount(isFullscreen: isFullscreen)
+
+        return VStack(spacing: 12) {
+            header
+                .padding(.horizontal, SwitcherMetrics.gridHorizontalPadding)
+                .padding(.top, 16)
+
+            if viewModel.isSearchMode {
+                SearchBarView(
+                    text: $viewModel.searchQuery,
+                    isSearchMode: $viewModel.isSearchMode,
+                    onExit: { viewModel.exitSearchMode() }
+                )
+                .padding(.horizontal, SwitcherMetrics.gridHorizontalPadding)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            PermissionsBannerView()
+                .padding(.horizontal, SwitcherMetrics.gridHorizontalPadding)
+
+            WindowGrid(
+                viewModel: viewModel,
+                columnCount: columnCount,
+                cardSize: cardSize,
+                onConfirm: onConfirm
+            )
+
+            ShortcutLegend(isFullscreen: isFullscreen)
+                .padding(.horizontal, SwitcherMetrics.gridHorizontalPadding)
+                .padding(.bottom, 14)
+                .padding(.top, 2)
+        }
         .frame(
-            maxWidth: coversScreen ? .infinity : nil,
-            maxHeight: coversScreen ? .infinity : nil
+            minWidth: isFullscreen
+                ? 1080
+                : min(860, max(680, SwitcherMetrics.contentWidth(columns: columnCount, isFullscreen: false) - 40)),
+            maxWidth: isFullscreen
+                ? min(SwitcherMetrics.maxFullscreenWidth, max(1080, SwitcherMetrics.contentWidth(columns: columnCount, isFullscreen: true)))
+                : min(SwitcherMetrics.maxFloatingWidth, max(860, SwitcherMetrics.contentWidth(columns: columnCount, isFullscreen: false)))
         )
-        .animation(.smooth(duration: 0.22), value: isFullscreen)
-        .animation(.smooth(duration: 0.18), value: viewModel.isSearchMode)
-        .animation(.smooth(duration: 0.20), value: viewModel.isPreviewOpen)
-        .animation(.smooth(duration: 0.18), value: viewModel.isSettingsOpen)
-        .onChange(of: coversScreen) { _, _ in onLayoutChange() }
-        .onChange(of: preferences.displayMode) { _, _ in onLayoutChange() }
-        .onChange(of: viewModel.filteredWindows.count) { _, _ in onLayoutChange() }
+        .glassPanel(cornerRadius: SwitcherMetrics.panelCornerRadius)
+        .shadow(color: Color.black.opacity(isFullscreen ? 0 : 0.42), radius: isFullscreen ? 0 : 30, x: 0, y: 15)
+    }
+
+    @ViewBuilder
+    private func dimmingLayer(opacity: Double, onTap: @escaping () -> Void) -> some View {
+        Color.black.opacity(opacity)
+            .ignoresSafeArea()
+            .transition(.opacity)
+            .onTapGesture(perform: onTap)
     }
 
     @ViewBuilder
     private var backdrop: some View {
-        Group {
-            if isFullscreen {
-                Color.black.opacity(0.20)
-            } else {
-                Color.clear.contentShape(Rectangle())
-            }
-        }
-        .ignoresSafeArea()
-        .onTapGesture {
-            if viewModel.isPreviewOpen {
-                viewModel.closePreview()
-            } else if viewModel.isSettingsOpen {
-                dismissSettings()
-            } else if viewModel.isSearchMode {
-                viewModel.exitSearchMode()
-            } else {
-                onCancel()
-            }
+        Color.black.opacity(0.20)
+            .ignoresSafeArea()
+            .onTapGesture { handleBackdropTap() }
+    }
+
+    private func handleBackdropTap() {
+        if viewModel.pendingConfirmation != nil {
+            viewModel.pendingConfirmation = nil
+        } else if viewModel.isHelpOpen {
+            viewModel.closeHelp()
+        } else if viewModel.isPreviewOpen {
+            viewModel.closePreview()
+        } else if viewModel.isSettingsOpen {
+            viewModel.closeSettings()
+        } else if viewModel.isSearchMode {
+            viewModel.exitSearchMode()
+        } else {
+            onCancel()
         }
     }
 
@@ -149,21 +186,18 @@ struct SwitcherView: View {
             HStack(spacing: 8) {
                 Image(systemName: "macwindow.on.rectangle")
                     .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(.accentColor)
+                    .foregroundStyle(accent)
 
                 Text("MonoTab")
                     .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundColor(.primary)
+                    .foregroundStyle(.primary)
 
                 if viewModel.isAppOnlyMode {
-                    Text("App Only")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2.5)
-                        .background(Color.blue.opacity(0.18))
-                        .overlay(Capsule().strokeBorder(Color.blue.opacity(0.35), lineWidth: 0.5))
-                        .clipShape(Capsule())
-                        .foregroundColor(.blue)
+                    TagBadge(text: "App Only", tint: accent, size: 10)
+                }
+
+                if preferences.useRecentOrdering {
+                    TagBadge(icon: "clock.arrow.circlepath", text: "Recent", tint: .secondary, size: 9)
                 }
             }
 
@@ -172,84 +206,85 @@ struct SwitcherView: View {
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 8) {
                     let count = viewModel.filteredWindows.count
-                Text("\(count) \(count == 1 ? "window" : "windows")")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .glassBadge()
-                    .foregroundColor(.secondary)
-
-                if !viewModel.isSearchMode {
-                    Button {
-                        withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
-                            viewModel.enterSearchMode()
-                        }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text("Search")
-                                .font(.system(size: 11, weight: .medium))
-                            KeyCap("f", size: 9)
-                        }
-                        .padding(.horizontal, 8)
+                    Text("\(count) \(count == 1 ? "window" : "windows")")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .padding(.horizontal, 9)
                         .padding(.vertical, 4)
                         .glassBadge()
-                        .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Search windows (Press 'f' or '/')")
-                }
+                        .foregroundStyle(.secondary)
 
-                Button {
-                    withAnimation(.smooth(duration: 0.22)) {
-                        preferences.toggleDisplayMode()
+                    if !viewModel.isSearchMode {
+                        headerButton(help: "Search windows (f or /)", action: { viewModel.enterSearchMode() }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text("Search")
+                                    .font(.system(size: 11, weight: .medium))
+                                KeyCap("f", size: 9)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                        }
                     }
-                } label: {
-                    Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(6)
-                        .glassBadge()
-                }
-                .buttonStyle(.plain)
-                .help(isFullscreen ? "Switch to floating mode" : "Expand to fullscreen")
 
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        viewModel.toggleSettings()
+                    headerButton(
+                        help: isFullscreen ? "Switch to floating mode" : "Expand to fullscreen",
+                        action: { preferences.toggleDisplayMode() }
+                    ) {
+                        Image(systemName: isFullscreen
+                            ? "arrow.down.right.and.arrow.up.left"
+                            : "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(6)
                     }
-                } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(6)
-                        .glassBadge()
-                }
-                    .buttonStyle(.plain)
-                    .help("Preferences")
+
+                    headerButton(help: "Keyboard shortcuts (?)", action: { viewModel.toggleHelp() }) {
+                        Image(systemName: "questionmark")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(6)
+                    }
+
+                    headerButton(help: "Preferences", action: { viewModel.toggleSettings() }) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(6)
+                    }
                 }
             }
         }
     }
 
-    private func dismissSettings() {
-        withAnimation {
-            viewModel.closeSettings()
-            onCancel()
+    @ViewBuilder
+    private func headerButton<Label: View>(
+        help: String,
+        action: @escaping () -> Void,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        Button(action: action) {
+            label()
+                .glassBadge()
+                .foregroundStyle(.secondary)
         }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 
 private struct WindowGrid: View {
     let viewModel: SwitcherViewModel
     let columnCount: Int
-    let cardWidth: CGFloat
-    let cardHeight: CGFloat
-    let isFullscreen: Bool
+    let cardSize: CGSize
     let onConfirm: () -> Void
+
+    @Environment(\.monoReduceMotion) private var reduceMotion
 
     private var columns: [GridItem] {
         Array(
-            repeating: GridItem(.flexible(minimum: cardWidth - 8, maximum: cardWidth + 30), spacing: 16),
+            repeating: GridItem(
+                .flexible(minimum: cardSize.width - 8, maximum: cardSize.width + 30),
+                spacing: SwitcherMetrics.columnSpacing
+            ),
             count: columnCount
         )
     }
@@ -257,6 +292,7 @@ private struct WindowGrid: View {
     var body: some View {
         let windows = viewModel.filteredWindows
         let selectedID = viewModel.selectedWindow?.id
+        let quickNumbers = viewModel.quickNumbers()
 
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
@@ -264,52 +300,36 @@ private struct WindowGrid: View {
                     if windows.isEmpty {
                         EmptyState()
                     } else {
-                        LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(Array(windows.enumerated()), id: \.element.id) { index, window in
+                        LazyVGrid(columns: columns, spacing: SwitcherMetrics.rowSpacing) {
+                            ForEach(windows) { window in
                                 WindowThumbnailCard(
                                     window: window,
                                     slot: viewModel.slot(for: window.id),
                                     isSelected: window.id == selectedID,
-                                    index: index,
-                                    cardWidth: cardWidth,
-                                    cardHeight: cardHeight,
+                                    quickNumber: quickNumbers[window.id],
+                                    cardSize: cardSize,
                                     onSelect: { viewModel.select(id: window.id) },
                                     onActivate: onConfirm,
                                     onClose: { SwitcherPanelController.shared.close(window: window) }
                                 )
+                                .equatable()
                                 .id(window.id)
                             }
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, SwitcherMetrics.gridHorizontalPadding)
+                        .padding(.vertical, SwitcherMetrics.gridVerticalPadding)
                     }
                 }
-            }
-            .overlay(alignment: .top) {
-                LinearGradient(
-                    colors: [Color.black.opacity(0.18), Color.clear],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 8)
-                .allowsHitTesting(false)
-            }
-            .overlay(alignment: .bottom) {
-                LinearGradient(
-                    colors: [Color.clear, Color.black.opacity(0.18)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 8)
-                .allowsHitTesting(false)
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(maxHeight: viewModel.maxGridHeight)
             .fixedSize(horizontal: false, vertical: true)
             .onChange(of: selectedID) { _, newID in
                 guard let newID else { return }
-                withAnimation(.smooth(duration: 0.15)) {
+                if reduceMotion {
                     proxy.scrollTo(newID)
+                } else {
+                    withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(newID) }
                 }
             }
         }
@@ -321,13 +341,13 @@ private struct EmptyState: View {
         VStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 34))
-                .foregroundColor(.secondary.opacity(0.5))
+                .foregroundStyle(.secondary.opacity(0.5))
             Text("No windows found")
                 .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundColor(.secondary)
-            Text("Press Esc to clear search or cancel")
+                .foregroundStyle(.secondary)
+            Text("Press Esc to clear the search or dismiss MonoTab")
                 .font(.system(size: 11, weight: .regular))
-                .foregroundColor(.secondary.opacity(0.7))
+                .foregroundStyle(.secondary.opacity(0.7))
         }
         .frame(maxWidth: .infinity, minHeight: 220)
     }
@@ -352,24 +372,20 @@ private struct QuickLookView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(window.displayTitle)
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.primary)
+                        .foregroundStyle(.primary)
                         .lineLimit(2)
 
                     HStack(spacing: 8) {
                         Text(window.appName)
                             .font(.system(size: 12, weight: .regular))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
 
                         if window.isMinimized {
-                            Text("Minimized")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(.orange)
+                            TagBadge(icon: "arrow.down.right.and.arrow.up.left", text: "minimized", tint: .orange)
                         }
 
                         if let display = window.displayIndex {
-                            Text("Display \(display)")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(.blue)
+                            TagBadge(icon: "display", text: "Display \(display)", tint: .blue)
                         }
                     }
                 }
@@ -379,15 +395,16 @@ private struct QuickLookView: View {
                 Button(action: onClose) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 18))
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Close preview (Space / Esc)")
+                .accessibilityLabel("Close preview")
             }
 
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.black.opacity(0.35))
+                    .fill(Color.primary.opacity(0.08))
 
                 if let image = slot.image {
                     Image(decorative: image, scale: 1, orientation: .up)
@@ -396,22 +413,15 @@ private struct QuickLookView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .padding(6)
                 } else {
-                    VStack(spacing: 12) {
-                        Image(systemName: "macwindow")
-                            .font(.system(size: 44, weight: .light))
-                            .foregroundColor(.secondary)
-                        Text(window.appName)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.secondary)
-                    }
+                    AppGlyph(pid: window.pid, appName: window.appName, iconSize: 64, showsName: true)
                 }
             }
-            .frame(minWidth: 480, maxWidth: 760, minHeight: 320, maxHeight: 480)
+            .frame(minWidth: 480, maxWidth: 820, minHeight: 320, maxHeight: 500)
 
             HStack {
                 HStack(spacing: 10) {
                     ShortcutHint(key: "Space", description: "Close Preview")
-                    ShortcutHint(key: "⏎", description: "Switch to Window")
+                    ShortcutHint(key: "⏎", description: "Switch")
                     ShortcutHint(key: "w", description: "Close")
                     ShortcutHint(key: "m", description: "Min")
                     ShortcutHint(key: "z", description: "Zoom")
@@ -425,88 +435,49 @@ private struct QuickLookView: View {
             }
         }
         .padding(18)
+        .frame(width: SwitcherMetrics.previewSize.width)
         .glassPanel(cornerRadius: 20)
         .shadow(color: Color.black.opacity(0.4), radius: 24, x: 0, y: 12)
     }
 }
 
 private struct ShortcutLegend: View {
-    let shortcut: ShortcutPreference
     let isFullscreen: Bool
 
     var body: some View {
         HStack(spacing: 10) {
-            // Grupo 1: Navegação principal
-            HStack(spacing: 7) {
-                ShortcutHint(key: "↑↓←→ / hjkl", description: "Navegar")
-                ShortcutHint(key: "1-9", description: "Pular")
-                ShortcutHint(key: "Espaço", description: "Prévia")
-            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(ShortcutCatalog.legend) { ShortcutHint($0) }
+                }
 
-            Rectangle()
-                .fill(Color.primary.opacity(0.12))
-                .frame(width: 1, height: 12)
+                HStack(spacing: 8) {
+                    ForEach(ShortcutCatalog.legend.prefix(4)) { ShortcutHint($0) }
+                }
 
-            // Grupo 2: Ações de janela
-            HStack(spacing: 7) {
-                ShortcutHint(key: "w", description: "Fechar")
-                ShortcutHint(key: "m", description: "Min")
-                ShortcutHint(key: "z", description: "Zoom")
-                ShortcutHint(key: "⌘Q", description: "Encerrar")
-                ShortcutHint(key: "f", description: "Buscar")
+                HStack(spacing: 8) {
+                    ShortcutHint(key: "?", description: "Shortcuts")
+                }
             }
 
             Spacer(minLength: 8)
 
-            // Grupo 3 (Final dos atalhos): Confirmação, Saída e Indicador de Modo
-            HStack(spacing: 8) {
-                ShortcutHint(key: "⏎ Enter", description: "Abrir")
-                ShortcutHint(key: "⎋ Esc", description: "Sair")
-
-                HStack(spacing: 4) {
-                    Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 8, weight: .bold))
-                    Text(isFullscreen ? "Fullscreen" : "Floating")
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                }
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2.5)
-                .surfaceTile(cornerRadius: 4)
+            HStack(spacing: 4) {
+                Image(systemName: isFullscreen
+                    ? "arrow.down.right.and.arrow.up.left"
+                    : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 8, weight: .bold))
+                Text(isFullscreen ? "Fullscreen" : "Floating")
+                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
             }
-        }
-    }
-}
-
-struct KeyCap: View {
-    let label: String
-    let size: CGFloat
-
-    init(_ label: String, size: CGFloat = 10) {
-        self.label = label
-        self.size = size
-    }
-
-    var body: some View {
-        Text(label)
-            .font(.system(size: size, weight: .bold, design: .monospaced))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2.5)
             .surfaceTile(cornerRadius: 4)
-            .foregroundColor(.primary)
-    }
-}
 
-struct ShortcutHint: View {
-    let key: String
-    let description: String
-
-    var body: some View {
-        HStack(spacing: 5) {
-            KeyCap(key)
-            Text(description)
-                .font(.system(size: 10, weight: .regular))
-                .foregroundColor(.secondary)
+            Text("v\(AppInfo.bundleVersion)")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary.opacity(0.7))
         }
     }
 }

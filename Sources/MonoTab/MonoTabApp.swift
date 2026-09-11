@@ -1,7 +1,6 @@
 import AppKit
 
 @main
-@MainActor
 struct MonoTabApp {
     private static var strongAppDelegate: AppDelegate?
 

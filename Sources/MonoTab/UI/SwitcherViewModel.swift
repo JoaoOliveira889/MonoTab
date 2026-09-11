@@ -3,7 +3,6 @@ import Foundation
 import Observation
 import SwiftUI
 
-@MainActor
 @Observable
 final class ThumbnailSlot {
     var image: CGImage?
@@ -19,11 +18,14 @@ private struct RankedWindow {
     let order: Int
 }
 
-@MainActor
 @Observable
 final class SwitcherViewModel {
     var windows: [WindowInfo] = [] {
-        didSet { applyFilter() }
+        didSet {
+            searchKeys = nil
+            syncSlots()
+            applyFilter()
+        }
     }
 
     private(set) var filteredWindows: [WindowInfo] = []
@@ -37,11 +39,11 @@ final class SwitcherViewModel {
     }
 
     var selectedIndex: Int = 0
-
     var maxGridHeight: CGFloat = 640
-
     var isAppOnlyMode: Bool = false
     var isPreviewOpen: Bool = false
+    var pendingConfirmation: PendingConfirmation?
+
     @ObservationIgnored var targetAppPID: pid_t?
 
     var isSearchMode: Bool = false {
@@ -58,8 +60,17 @@ final class SwitcherViewModel {
         }
     }
 
+    var isHelpOpen: Bool = false
+
+    var isTextEntryActive: Bool { isSearchMode || isSettingsOpen }
+
+    var coversWholeScreen: Bool {
+        PreferencesManager.shared.displayMode == .fullscreen
+    }
+
     @ObservationIgnored var onOverlayStateChange: (@MainActor () -> Void)?
     @ObservationIgnored private var slots: [CGWindowID: ThumbnailSlot] = [:]
+    @ObservationIgnored private var searchKeys: [WindowSearchKey]?
     @ObservationIgnored private var extendedFetchTask: Task<Void, Never>?
     @ObservationIgnored private var thumbnailTask: Task<Void, Never>?
 
@@ -70,10 +81,33 @@ final class SwitcherViewModel {
     }
 
     func slot(for windowID: CGWindowID) -> ThumbnailSlot {
-        if let existing = slots[windowID] { return existing }
-        let slot = ThumbnailSlot(image: WindowManager.shared.cachedThumbnail(for: windowID))
-        slots[windowID] = slot
-        return slot
+        slots[windowID] ?? ThumbnailSlot(image: WindowManager.shared.cachedThumbnail(for: windowID))
+    }
+
+    func quickNumbers() -> [CGWindowID: Int] {
+        guard PreferencesManager.shared.showQuickShortcuts else { return [:] }
+        var numbers: [CGWindowID: Int] = [:]
+        for (index, window) in filteredWindows.prefix(9).enumerated() {
+            numbers[window.id] = index + 1
+        }
+        return numbers
+    }
+
+    private func syncSlots() {
+        var updated: [CGWindowID: ThumbnailSlot] = [:]
+        updated.reserveCapacity(windows.count)
+        for window in windows {
+            updated[window.id] = slots[window.id]
+                ?? ThumbnailSlot(image: WindowManager.shared.cachedThumbnail(for: window.id))
+        }
+        slots = updated
+    }
+
+    private func resolvedSearchKeys() -> [WindowSearchKey] {
+        if let searchKeys { return searchKeys }
+        let keys = windows.map(\.searchKey)
+        searchKeys = keys
+        return keys
     }
 
     private func applyFilter() {
@@ -83,22 +117,27 @@ final class SwitcherViewModel {
             return
         }
 
+        let keys = resolvedSearchKeys()
         var ranked: [RankedWindow] = []
         ranked.reserveCapacity(windows.count)
         for (index, window) in windows.enumerated() {
-            guard let score = window.matchScore(normalizedQuery: query) else { continue }
+            guard index < keys.count, let score = keys[index].score(query: query) else { continue }
             ranked.append(RankedWindow(window: window, score: score, order: index))
         }
         ranked.sort { $0.score == $1.score ? $0.order < $1.order : $0.score > $1.score }
         filteredWindows = ranked.map(\.window)
     }
 
-    func refreshWindows(appOnly: Bool = false, targetPID: pid_t? = nil) {
+    // MARK: - Refresh
+
+    func refreshWindows(appOnly: Bool = false, targetPID: pid_t? = nil, screens: ScreenSnapshot) {
         extendedFetchTask?.cancel()
         searchQuery = ""
         isSearchMode = false
         isSettingsOpen = false
+        isHelpOpen = false
         isPreviewOpen = false
+        pendingConfirmation = nil
         isAppOnlyMode = appOnly
         targetAppPID = targetPID
 
@@ -107,11 +146,11 @@ final class SwitcherViewModel {
         let showTabs = preferences.showAppTabs
         let currentSpaceOnly = preferences.currentSpaceOnly
 
-        var base = WindowManager.shared.fetchOnScreenWindows()
+        var base = WindowManager.shared.fetchOnScreenWindows(screens: screens)
         if appOnly, let targetPID {
             base = base.filter { $0.pid == targetPID }
         }
-        apply(windows: base, preferredID: nil)
+        apply(windows: ordered(base), preferredID: nil)
 
         guard includeMinimized || showTabs || !currentSpaceOnly else { return }
 
@@ -119,6 +158,7 @@ final class SwitcherViewModel {
         extendedFetchTask = Task { [weak self] in
             var extended = await WindowManager.shared.fetchExtendedWindows(
                 base: base,
+                screens: screens,
                 includeMinimized: includeMinimized,
                 showTabs: showTabs,
                 currentSpaceOnly: currentSpaceOnly
@@ -126,16 +166,19 @@ final class SwitcherViewModel {
             if appOnly, let targetPID {
                 extended = extended.filter { $0.pid == targetPID }
             }
-            guard !Task.isCancelled, let self, extended.count != base.count else { return }
-            self.apply(windows: extended, preferredID: preferredID)
+            guard !Task.isCancelled, let self else { return }
+            guard Set(extended.map(\.id)) != Set(base.map(\.id)) else { return }
+            self.apply(windows: self.ordered(extended), preferredID: preferredID)
         }
+    }
+
+    private func ordered(_ windows: [WindowInfo]) -> [WindowInfo] {
+        guard PreferencesManager.shared.useRecentOrdering else { return windows }
+        return WindowActivationHistory.shared.ordered(windows)
     }
 
     private func apply(windows newWindows: [WindowInfo], preferredID: CGWindowID?) {
         windows = newWindows
-
-        let liveIDs = Set(newWindows.map(\.id))
-        slots = slots.filter { liveIDs.contains($0.key) }
         AppIconCache.retain(pids: Set(newWindows.map(\.pid)))
 
         if let preferredID, let index = filteredWindows.firstIndex(where: { $0.id == preferredID }) {
@@ -155,7 +198,7 @@ final class SwitcherViewModel {
         let priorityID = selectedWindow?.id
         thumbnailTask = Task { [weak self] in
             await WindowManager.shared.captureThumbnails(for: targets, priorityID: priorityID) { id, image in
-                self?.slot(for: id).image = image
+                self?.slots[id]?.image = image
             }
         }
     }
@@ -166,6 +209,8 @@ final class SwitcherViewModel {
         extendedFetchTask = nil
         thumbnailTask = nil
     }
+
+    // MARK: - Selection
 
     func select(id: CGWindowID) {
         guard let index = filteredWindows.firstIndex(where: { $0.id == id }) else { return }
@@ -184,7 +229,11 @@ final class SwitcherViewModel {
         selectedIndex = (selectedIndex - 1 + count) % count
     }
 
-    func navigate(direction: HotkeyManager.NavigationDirection, columns: Int) {
+    func cycle(forward: Bool) {
+        if forward { selectNext() } else { selectPrevious() }
+    }
+
+    func navigate(direction: NavigationDirection, columns: Int) {
         let count = filteredWindows.count
         guard count > 0 else { return }
 
@@ -202,32 +251,11 @@ final class SwitcherViewModel {
         }
     }
 
-    private func mutateWindows(_ mutation: () -> Void) {
-        withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
-            mutation()
-            clampSelection()
-        }
-    }
-
-    func removeWindows(pid: pid_t) {
-        mutateWindows {
-            for window in windows where window.pid == pid {
-                slots.removeValue(forKey: window.id)
-            }
-            windows.removeAll { $0.pid == pid }
-        }
-    }
-
-    func removeWindow(id: CGWindowID) {
-        mutateWindows {
-            windows.removeAll { $0.id == id }
-            slots.removeValue(forKey: id)
-        }
-    }
-
-    private func clampSelection() {
-        let remaining = filteredWindows.count
-        selectedIndex = remaining == 0 ? 0 : min(selectedIndex, remaining - 1)
+    @discardableResult
+    func quickSelect(number: Int) -> WindowInfo? {
+        guard number >= 1, number <= filteredWindows.count else { return nil }
+        selectedIndex = number - 1
+        return selectedWindow
     }
 
     func columnCount(isFullscreen: Bool) -> Int {
@@ -241,59 +269,61 @@ final class SwitcherViewModel {
         }
     }
 
-    func enterSearchMode() {
-        isSearchMode = true
+    // MARK: - Mutations
+
+    private func mutateWindows(_ mutation: () -> Void) {
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.8)) {
+            mutation()
+            clampSelection()
+        }
     }
+
+    func removeWindows(pid: pid_t) {
+        mutateWindows {
+            windows.removeAll { $0.pid == pid }
+        }
+    }
+
+    func removeWindow(id: CGWindowID) {
+        mutateWindows {
+            windows.removeAll { $0.id == id }
+        }
+    }
+
+    private func clampSelection() {
+        let remaining = filteredWindows.count
+        selectedIndex = remaining == 0 ? 0 : min(selectedIndex, remaining - 1)
+    }
+
+    // MARK: - Modes
+
+    func enterSearchMode() { isSearchMode = true }
 
     func exitSearchMode() {
         isSearchMode = false
         searchQuery = ""
     }
 
-    func openSettings() {
-        isSettingsOpen = true
-    }
-
-    func closeSettings() {
-        isSettingsOpen = false
-    }
-
-    func toggleSettings() {
-        isSettingsOpen.toggle()
-    }
-
-    @discardableResult
-    func quickSelect(number: Int) -> WindowInfo? {
-        guard number >= 1, number <= filteredWindows.count else { return nil }
-        selectedIndex = number - 1
-        return selectedWindow
-    }
-
-    func togglePreview() {
-        isPreviewOpen.toggle()
-    }
-
-    func openPreview() {
-        isPreviewOpen = true
-    }
-
-    func closePreview() {
-        isPreviewOpen = false
-    }
-
-    func toggleMinimizeSelected() {
-        guard let window = selectedWindow else { return }
-        WindowManager.shared.toggleMinimize(window: window)
-    }
-
-    func toggleZoomSelected() {
-        guard let window = selectedWindow else { return }
-        WindowManager.shared.toggleZoom(window: window)
-    }
-
-    func hideSelectedApp() {
-        guard let window = selectedWindow else { return }
-        WindowManager.shared.hideApplication(pid: window.pid)
-    }
+    func openSettings() { isSettingsOpen = true }
+    func closeSettings() { isSettingsOpen = false }
+    func toggleSettings() { isSettingsOpen.toggle() }
+    func toggleHelp() { isHelpOpen.toggle() }
+    func closeHelp() { isHelpOpen = false }
+    func togglePreview() { isPreviewOpen.toggle() }
+    func closePreview() { isPreviewOpen = false }
 }
 
+nonisolated enum SwitcherSheet: Sendable {
+    case settings
+    case help
+    case preview
+}
+
+extension SwitcherViewModel {
+    var activeSheet: SwitcherSheet? {
+        if isSettingsOpen { return .settings }
+        if isHelpOpen { return .help }
+        if isPreviewOpen { return .preview }
+        return nil
+    }
+}

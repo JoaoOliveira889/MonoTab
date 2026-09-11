@@ -1,56 +1,45 @@
 import SwiftUI
 
-struct WindowThumbnailCard: View {
+struct WindowThumbnailCard: View, Equatable {
     let window: WindowInfo
     let slot: ThumbnailSlot
     let isSelected: Bool
-    let index: Int?
-    let cardWidth: CGFloat
-    let cardHeight: CGFloat
+    let quickNumber: Int?
+    let cardSize: CGSize
     let onSelect: () -> Void
     let onActivate: () -> Void
     let onClose: () -> Void
 
     @State private var isHovered = false
+    @Environment(\.monoReduceMotion) private var reduceMotion
 
-    init(
-        window: WindowInfo,
-        slot: ThumbnailSlot,
-        isSelected: Bool,
-        index: Int? = nil,
-        cardWidth: CGFloat,
-        cardHeight: CGFloat,
-        onSelect: @escaping () -> Void,
-        onActivate: @escaping () -> Void,
-        onClose: @escaping () -> Void
-    ) {
-        self.window = window
-        self.slot = slot
-        self.isSelected = isSelected
-        self.index = index
-        self.cardWidth = cardWidth
-        self.cardHeight = cardHeight
-        self.onSelect = onSelect
-        self.onActivate = onActivate
-        self.onClose = onClose
-    }
-
-    private var appIcon: NSImage? {
-        AppIconCache.icon(for: window.pid)
+    static func == (lhs: WindowThumbnailCard, rhs: WindowThumbnailCard) -> Bool {
+        lhs.window.id == rhs.window.id
+            && lhs.window.title == rhs.window.title
+            && lhs.window.isMinimized == rhs.window.isMinimized
+            && lhs.window.displayIndex == rhs.window.displayIndex
+            && lhs.slot === rhs.slot
+            && lhs.isSelected == rhs.isSelected
+            && lhs.quickNumber == rhs.quickNumber
+            && lhs.cardSize == rhs.cardSize
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             preview
-                .frame(width: cardWidth, height: cardHeight)
+                .frame(width: cardSize.width, height: cardSize.height)
                 .clipped()
 
             caption
-                .frame(width: cardWidth)
+                .frame(width: cardSize.width)
         }
         .padding(8)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .selectionCard(isSelected: isSelected, isHovered: isHovered, cornerRadius: 14)
+        .contentShape(RoundedRectangle(cornerRadius: SwitcherMetrics.cardCornerRadius, style: .continuous))
+        .selectionCard(
+            isSelected: isSelected,
+            isHovered: isHovered,
+            cornerRadius: SwitcherMetrics.cardCornerRadius
+        )
         .onHover { isHovered = $0 }
         .onTapGesture {
             onSelect()
@@ -65,7 +54,7 @@ struct WindowThumbnailCard: View {
     private var preview: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.black.opacity(0.20))
+                .fill(Color.primary.opacity(0.07))
 
             if let image = slot.image {
                 Image(decorative: image, scale: 1, orientation: .up)
@@ -75,14 +64,20 @@ struct WindowThumbnailCard: View {
                     .padding(3)
                     .transition(.opacity)
             } else {
-                placeholder
+                AppGlyph(pid: window.pid, appName: window.appName, iconSize: 44, showsName: true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            if isHovered || (index != nil && index! < 9 && PreferencesManager.shared.showQuickShortcuts) {
+            if isHovered || quickNumber != nil {
                 VStack {
                     HStack {
-                        if let index, index < 9, PreferencesManager.shared.showQuickShortcuts {
-                            QuickKeyBadge(number: index + 1)
+                        if let quickNumber {
+                            Text("\(quickNumber)")
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 4.5)
+                                .padding(.vertical, 2)
+                                .surfaceTile(cornerRadius: 4)
                         }
 
                         Spacer()
@@ -91,11 +86,13 @@ struct WindowThumbnailCard: View {
                             Button(action: onClose) {
                                 Image(systemName: "xmark.circle.fill")
                                     .font(.system(size: 16))
-                                    .foregroundColor(.white.opacity(0.85))
-                                    .shadow(color: Color.black.opacity(0.5), radius: 3, x: 0, y: 1)
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(.primary)
+                                    .shadow(color: Color.black.opacity(0.4), radius: 3, x: 0, y: 1)
                             }
                             .buttonStyle(.plain)
                             .help("Close window (w)")
+                            .accessibilityLabel("Close \(window.displayTitle)")
                         }
                     }
                     .padding(6)
@@ -105,35 +102,13 @@ struct WindowThumbnailCard: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.18), value: slot.image == nil)
-    }
-
-    @ViewBuilder
-    private var placeholder: some View {
-        VStack(spacing: 8) {
-            if let appIcon {
-                Image(nsImage: appIcon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 44, height: 44)
-                    .shadow(color: Color.black.opacity(0.25), radius: 5, x: 0, y: 2)
-            } else {
-                Image(systemName: "macwindow")
-                    .font(.system(size: 30, weight: .light))
-                    .foregroundColor(.secondary)
-            }
-
-            Text(window.appName)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .monoAnimation(.easeOut(duration: 0.18), value: slot.image == nil, enabled: !reduceMotion)
     }
 
     @ViewBuilder
     private var caption: some View {
         HStack(spacing: 8) {
-            if let appIcon {
+            if let appIcon = AppIconCache.icon(for: window.pid) {
                 Image(nsImage: appIcon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -141,7 +116,7 @@ struct WindowThumbnailCard: View {
             } else {
                 Image(systemName: "app.fill")
                     .frame(width: 22, height: 22)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 1) {
@@ -149,20 +124,20 @@ struct WindowThumbnailCard: View {
                     Text(window.displayTitle)
                         .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
                         .lineLimit(1)
-                        .foregroundColor(.primary)
+                        .foregroundStyle(.primary)
 
                     if window.isMinimized {
-                        MinimizedBadge()
+                        TagBadge(icon: "arrow.down.right.and.arrow.up.left", text: "minimized", tint: .orange)
                     }
 
                     if let display = window.displayIndex {
-                        DisplayBadge(index: display)
+                        TagBadge(icon: "display", text: "\(display)", tint: .blue)
                     }
                 }
 
                 Text(window.appName)
                     .font(.system(size: 10, weight: .regular))
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
@@ -170,54 +145,3 @@ struct WindowThumbnailCard: View {
         }
     }
 }
-
-private struct QuickKeyBadge: View {
-    let number: Int
-
-    var body: some View {
-        Text("\(number)")
-            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-            .foregroundColor(.primary)
-            .padding(.horizontal, 4.5)
-            .padding(.vertical, 2)
-            .surfaceTile(cornerRadius: 4)
-            .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
-    }
-}
-
-private struct DisplayBadge: View {
-    let index: Int
-
-    var body: some View {
-        HStack(spacing: 2) {
-            Image(systemName: "display")
-                .font(.system(size: 6.5))
-            Text("\(index)")
-                .font(.system(size: 8, weight: .bold, design: .rounded))
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 1.5)
-        .background(Color.blue.opacity(0.16))
-        .overlay(Capsule().strokeBorder(Color.blue.opacity(0.35), lineWidth: 0.5))
-        .clipShape(Capsule())
-        .foregroundColor(.blue)
-    }
-}
-
-private struct MinimizedBadge: View {
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 7.5, weight: .bold))
-            Text("minimized")
-                .font(.system(size: 8.5, weight: .medium, design: .rounded))
-        }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
-        .background(Color.orange.opacity(0.18))
-        .overlay(Capsule().strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.5))
-        .clipShape(Capsule())
-        .foregroundColor(.orange)
-    }
-}
-

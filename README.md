@@ -5,9 +5,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/JoaoOliveira889/MonoTab/releases"><img src="https://img.shields.io/badge/version-v0.0.1-brightgreen" alt="Version v0.0.1" /></a>
+  <a href="https://github.com/JoaoOliveira889/MonoTab/releases"><img src="https://img.shields.io/badge/version-v0.1.0-brightgreen" alt="Version v0.1.0" /></a>
   <a href="https://apple.com/macos"><img src="https://img.shields.io/badge/macOS-26.0%2B-blue?logo=apple" alt="macOS 26+" /></a>
-  <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-6.0%2B-orange?logo=swift" alt="Swift 6.0+" /></a>
+  <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-6.2%2B-orange?logo=swift" alt="Swift 6.2+" /></a>
   <img src="https://img.shields.io/badge/Architecture-Apple%20Silicon%20(arm64)%20Only-purple" alt="Apple Silicon (arm64) Only" />
   <img src="https://img.shields.io/badge/Design-Liquid%20Glass-8A2BE2" alt="Liquid Glass Design" />
   <a href="docs/SECURITY.md"><img src="https://img.shields.io/badge/Privacy-Zero%20Telemetry-success" alt="Zero Telemetry" /></a>
@@ -47,7 +47,9 @@ Free and open-source software under the **MIT License**.
   - Strictly RAM-only; closed windows are automatically purged from memory.
 - **Flexible Shortcut Activation (`⌥ Tab` & `⌘ Tab`)**:
   - Choose between `⌥ Option + Tab`, `⌘ Command + Tab` (replacing macOS default application switcher), or **Both**.
-  - Immediate forward cycling targets the most recent window first (`selectedIndex = 1`).
+  - Hold the modifier and tap `Tab` to keep cycling forward, `⇧ Tab` to cycle backward; releasing the modifier activates the selection.
+- **Most Recently Used Ordering**:
+  - Cards are ordered by the window you last switched to, the way a real Alt+Tab behaves. Falls back to system stacking order when disabled in Preferences.
 - **Non-Closing Search Mode (`f` or `/`)**:
   - Press `f` or `/` during navigation to open search immediately.
   - Releasing modifier keys (⌥ / ⌘) in search mode **keeps MonoTab open**, allowing natural two-handed typing.
@@ -60,9 +62,19 @@ Free and open-source software under the **MIT License**.
   - Direct selection badges on the first 9 window cards allow instant 1-keystroke activation without navigation.
 - **Window Management Actions**:
   - **`w`**: Close selected window via Accessibility API.
+  - **`⇧ w`**: Hide the owning application.
   - **`m`**: Minimize or restore window to/from Dock.
   - **`z`**: Zoom / maximize window.
+  - **`[` / `]`**: Tile the window to the left or right half of its display.
+  - **`n`**: Move the window to the next display.
   - **`⌘Q`**: Terminate the selected application gracefully via Apple Event.
+  - Destructive actions (close window, quit app) ask for confirmation; the prompt can be turned off in Preferences.
+- **Shortcut Sheet (`?`)**:
+  - A full keyboard reference inside the switcher, so the footer legend stays short on narrow displays.
+- **Accent Colors**:
+  - Seven accents (System, Blue, Purple, Teal, Amber, Pink, Graphite) applied across selection, focus and chrome.
+- **Accessibility Aware**:
+  - Honours *Reduce Motion* and *Reduce Transparency*; every control carries a VoiceOver label.
 - **Ultra-Fluid 120 FPS Animations (ProMotion Native)**:
   - Hardware-accelerated GPU transitions, non-blocking CoreAnimation window resizing, jitter-free scroll alignment, and instant glowing focus states with zero frame drops.
 - **Menu Bar Item**:
@@ -89,7 +101,7 @@ Free and open-source software under the **MIT License**.
 | **Operating System** | macOS 26.0+ (Latest macOS Release) |
 | **Architecture** | Apple Silicon only (`arm64` native: M1, M2, M3, M4, Pro/Max/Ultra and later) |
 | **Display Support** | Native ProMotion 120Hz, Retina, HDR, and Multi-Monitor |
-| **Build Tools** *(source)* | Swift 6.0+ and Xcode 16.0+ / macOS 26 SDK |
+| **Build Tools** *(source)* | Swift 6.2+ tools (`swift-tools-version: 6.2`) and Xcode with the macOS 26 SDK |
 
 ---
 
@@ -161,16 +173,21 @@ When MonoTab opens for the first time, a setup banner will guide you to enable e
 | **`⌥ \``** or **`⌘ \``** | System-wide | Open MonoTab in **App-Only** mode (frontmost app windows) |
 | **`↑ ↓ ← →`** | Switcher visible | Navigate window grid |
 | **`h j k l`** | Switcher visible | Vim navigation (Left, Down, Up, Right) |
+| **`⇧ Tab`** *(modifier held)* | Switcher visible | Cycle backward |
 | **`1` – `9`** | Switcher visible | Quick jump to window by index number |
 | **`Space`** | Switcher visible | Toggle full-size **Quick Look** window preview |
 | **`w`** | Switcher visible | Close selected window via Accessibility API |
+| **`⇧ w`** | Switcher visible | Hide the application owning the selected window |
 | **`m`** | Switcher visible | Minimize or unminimize selected window |
 | **`z`** | Switcher visible | Zoom / maximize selected window |
+| **`[`** / **`]`** | Switcher visible | Tile selected window to the left / right half |
+| **`n`** | Switcher visible | Move selected window to the next display |
 | **`⌘ Q`** | Switcher visible | Quit selected application via Apple Event |
 | **`f`** or **`/`** | Switcher visible | Enter Search Mode (keeps window open without holding keys) |
+| **`?`** | Switcher visible | Toggle the full keyboard shortcut sheet |
 | **`⏎`** *(Enter)* | Switcher / Search | Focus selected window and dismiss switcher |
 | **`⎋`** *(Escape)* | Switcher visible | Dismiss switcher / Exit search mode / Close preview |
-| **`⌘ ,`** | Switcher visible | Open Preferences modal |
+| **`⌘ ,`** | Menu bar menu | Open Preferences |
 
 ---
 
@@ -189,6 +206,7 @@ Explore the detailed architecture, security audit, and permission references:
 
 Vector and high-resolution assets are available in the [`img/`](img/) directory:
 - [`img/icon.svg`](img/icon.svg): Scalable vector SVG of the 1980s retro CRT app icon.
+- [`Resources/AppIcon.iconset`](Resources/AppIcon.iconset): Icon sizes up to 64px use a simplified mark so the glyph stays readable in the Dock and Finder.
 - [`img/logo.png`](img/logo.png): Master 512x512 PNG app icon.
 - [`img/banner.png`](img/banner.png): Official project banner.
 - [`img/preview.png`](img/preview.png): Centered Liquid Glass HUD mockup.
@@ -197,6 +215,8 @@ Vector and high-resolution assets are available in the [`img/`](img/) directory:
 To regenerate iconsets and visual assets:
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift scripts/generate_assets.swift
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift scripts/generate_icon.swift
+iconutil -c icns Resources/AppIcon.iconset -o Resources/AppIcon.icns
 ```
 
 ---

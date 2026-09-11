@@ -1,83 +1,118 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Darwin
 import Foundation
 import ScreenCaptureKit
 import Synchronization
 
-@_silgen_name("_AXUIElementGetWindow")
-private func axWindowID(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+private typealias AXWindowIDFunction = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
 
-final class WindowManager: Sendable {
+private nonisolated let axWindowIDSymbol: AXWindowIDFunction? = {
+    guard let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2),
+          let symbol = dlsym(defaultHandle, "_AXUIElementGetWindow") else {
+        return nil
+    }
+    return unsafeBitCast(symbol, to: AXWindowIDFunction.self)
+}()
+
+private nonisolated func axWindowID(of element: AXUIElement) -> CGWindowID? {
+    guard let axWindowIDSymbol else { return nil }
+    var id: CGWindowID = 0
+    guard axWindowIDSymbol(element, &id) == .success, id > 0 else { return nil }
+    return id
+}
+
+nonisolated final class WindowManager: Sendable {
     static let shared = WindowManager()
 
     private static let axMessagingTimeout: Float = 0.05
     private static let axActionTimeout: Float = 0.5
     private static let thumbnailCacheLimit = 48
     private static let maxConcurrentCaptures = 4
+    private static let thumbnailFreshness = Duration.seconds(2)
+    private static let shareableContentLifetime = Duration.milliseconds(1500)
     private static let browserNames = ["safari", "chrome", "arc", "firefox", "brave", "edge"]
 
+    private struct Unchecked<Value>: @unchecked Sendable {
+        let value: Value
+
+        init(_ value: Value) { self.value = value }
+    }
+
+    private struct CachedThumbnail {
+        let image: CGImage
+        let bounds: CGRect
+        let capturedAt: ContinuousClock.Instant
+    }
+
     private struct ThumbnailStore {
-        var images: [CGWindowID: CGImage] = [:]
+        var entries: [CGWindowID: CachedThumbnail] = [:]
         var insertionOrder: [CGWindowID] = []
+    }
+
+    private struct ShareableCache {
+        var windows: Unchecked<[CGWindowID: SCWindow]>?
+        var fetchedAt: ContinuousClock.Instant?
     }
 
     private let thumbnails = Mutex(ThumbnailStore())
     private let appsCache = Mutex(AppLookup())
+    private let shareable = Mutex(ShareableCache())
 
     private init() {}
 
     // MARK: - Thumbnail cache
 
     func cachedThumbnail(for windowID: CGWindowID) -> CGImage? {
-        thumbnails.withLock { $0.images[windowID] }
+        thumbnails.withLock { $0.entries[windowID]?.image }
     }
 
     func clearCache() {
         thumbnails.withLock {
-            $0.images.removeAll()
+            $0.entries.removeAll()
             $0.insertionOrder.removeAll()
         }
-        appsCache.withLock {
-            $0.purge()
+        appsCache.withLock { $0.purge() }
+        shareable.withLock {
+            $0.windows = nil
+            $0.fetchedAt = nil
         }
     }
 
-    static func displayIndex(for bounds: CGRect) -> Int? {
-        let screens = NSScreen.screens
-        guard screens.count > 1 else { return nil }
-        let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        for (index, screen) in screens.enumerated() {
-            if NSMouseInRect(center, screen.frame, false) {
-                return index + 1
-            }
-        }
-        return 1
-    }
-
-    private func store(_ image: CGImage, for windowID: CGWindowID) {
+    private func store(_ image: CGImage, for windowID: CGWindowID, bounds: CGRect) {
         thumbnails.withLock { store in
-            if store.images.updateValue(image, forKey: windowID) == nil {
+            let entry = CachedThumbnail(image: image, bounds: bounds, capturedAt: ContinuousClock.now)
+            if store.entries.updateValue(entry, forKey: windowID) == nil {
                 store.insertionOrder.append(windowID)
             }
-            guard store.images.count > Self.thumbnailCacheLimit else { return }
-            let excess = store.images.count - Self.thumbnailCacheLimit
+            guard store.entries.count > Self.thumbnailCacheLimit else { return }
+            let excess = store.entries.count - Self.thumbnailCacheLimit
             for evicted in store.insertionOrder.prefix(excess) {
-                store.images.removeValue(forKey: evicted)
+                store.entries.removeValue(forKey: evicted)
             }
             store.insertionOrder.removeFirst(excess)
         }
     }
 
+    private func isFresh(_ window: WindowInfo, now: ContinuousClock.Instant) -> Bool {
+        thumbnails.withLock { store in
+            guard let entry = store.entries[window.id] else { return false }
+            return entry.bounds == window.bounds && now - entry.capturedAt < Self.thumbnailFreshness
+        }
+    }
+
     private func purgeThumbnails(keeping liveIDs: Set<CGWindowID>) {
         thumbnails.withLock { store in
-            guard store.images.count > liveIDs.count else { return }
-            store.images = store.images.filter { liveIDs.contains($0.key) }
+            guard store.entries.count > liveIDs.count else { return }
+            store.entries = store.entries.filter { liveIDs.contains($0.key) }
             store.insertionOrder.removeAll { !liveIDs.contains($0) }
         }
     }
 
-    func fetchOnScreenWindows() -> [WindowInfo] {
+    // MARK: - Enumeration
+
+    func fetchOnScreenWindows(screens: ScreenSnapshot) -> [WindowInfo] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         let raw = (CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]) ?? []
 
@@ -90,7 +125,7 @@ final class WindowManager: Sendable {
                 if info[kCGWindowIsOnscreen as String] as? Bool == false { continue }
                 if candidate.title.isEmpty, Self.requiresTitle(appName: candidate.appName) { continue }
 
-                results.append(candidate.windowInfo(isMinimized: false))
+                results.append(candidate.windowInfo(isMinimized: false, screens: screens))
             }
         }
 
@@ -100,6 +135,7 @@ final class WindowManager: Sendable {
 
     func fetchExtendedWindows(
         base: [WindowInfo],
+        screens: ScreenSnapshot,
         includeMinimized: Bool,
         showTabs: Bool,
         currentSpaceOnly: Bool
@@ -108,18 +144,17 @@ final class WindowManager: Sendable {
         var seenIDs = Set(base.map(\.id))
         let allWindows = (CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
 
-        var byWindowID: [CGWindowID: [String: Any]] = [:]
-        var byPID: [pid_t: [[String: Any]]] = [:]
-        byWindowID.reserveCapacity(allWindows.count)
-        for info in allWindows {
-            guard let number = info[kCGWindowNumber as String] as? NSNumber,
-                  let ownerPID = info[kCGWindowOwnerPID as String] as? NSNumber else { continue }
-            byWindowID[CGWindowID(number.uint32Value)] = info
-            byPID[pid_t(ownerPID.int32Value), default: []].append(info)
-        }
-
-
         if includeMinimized {
+            var byWindowID: [CGWindowID: [String: Any]] = [:]
+            var byPID: [pid_t: [[String: Any]]] = [:]
+            byWindowID.reserveCapacity(allWindows.count)
+            for info in allWindows {
+                guard let number = info[kCGWindowNumber as String] as? NSNumber,
+                      let ownerPID = info[kCGWindowOwnerPID as String] as? NSNumber else { continue }
+                byWindowID[CGWindowID(number.uint32Value)] = info
+                byPID[pid_t(ownerPID.int32Value), default: []].append(info)
+            }
+
             let currentPID = appsCache.withLock { $0.currentPID }
             let candidatePIDs = NSWorkspace.shared.runningApplications.compactMap { app -> pid_t? in
                 guard app.activationPolicy == .regular, app.processIdentifier != currentPID else { return nil }
@@ -161,7 +196,7 @@ final class WindowManager: Sendable {
                             title: title,
                             bounds: bounds,
                             isMinimized: true,
-                            displayIndex: Self.displayIndex(for: bounds)
+                            displayIndex: screens.displayIndex(forCoreGraphics: bounds)
                         ),
                         into: &results
                     )
@@ -181,7 +216,7 @@ final class WindowManager: Sendable {
 
                     seenIDs.insert(candidate.id)
                     onScreenPIDs.insert(candidate.pid)
-                    Self.insertGrouped(candidate.windowInfo(isMinimized: false), into: &results)
+                    Self.insertGrouped(candidate.windowInfo(isMinimized: false, screens: screens), into: &results)
                 }
             }
         }
@@ -258,7 +293,7 @@ final class WindowManager: Sendable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        func windowInfo(isMinimized: Bool) -> WindowInfo {
+        func windowInfo(isMinimized: Bool, screens: ScreenSnapshot) -> WindowInfo {
             WindowInfo(
                 id: id,
                 pid: pid,
@@ -266,10 +301,12 @@ final class WindowManager: Sendable {
                 title: title,
                 bounds: bounds,
                 isMinimized: isMinimized,
-                displayIndex: WindowManager.displayIndex(for: bounds)
+                displayIndex: screens.displayIndex(forCoreGraphics: bounds)
             )
         }
     }
+
+    // MARK: - Accessibility
 
     private struct MinimizedWindow: Sendable {
         let pid: pid_t
@@ -281,16 +318,16 @@ final class WindowManager: Sendable {
     private static func collectMinimizedWindows(pids: [pid_t]) async -> [MinimizedWindow] {
         guard !pids.isEmpty else { return [] }
 
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let collected = Mutex<[MinimizedWindow]>([])
-                DispatchQueue.concurrentPerform(iterations: pids.count) { index in
-                    let found = minimizedWindows(pid: pids[index])
-                    guard !found.isEmpty else { return }
-                    collected.withLock { $0.append(contentsOf: found) }
-                }
-                continuation.resume(returning: collected.withLock { $0 })
+        return await withTaskGroup(of: [MinimizedWindow].self) { group in
+            for pid in pids {
+                group.addTask(priority: .userInitiated) { minimizedWindows(pid: pid) }
             }
+
+            var collected: [MinimizedWindow] = []
+            for await found in group where !found.isEmpty {
+                collected.append(contentsOf: found)
+            }
+            return collected
         }
     }
 
@@ -318,8 +355,7 @@ final class WindowManager: Sendable {
                 continue
             }
 
-            var windowID: CGWindowID = 0
-            if axWindowID(axWindow, &windowID) != .success { windowID = 0 }
+            let windowID = axWindowID(of: axWindow) ?? 0
 
             var titleRef: CFTypeRef?
             AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
@@ -353,12 +389,13 @@ final class WindowManager: Sendable {
         return CGRect(origin: origin, size: size)
     }
 
-    private static func resolve(_ window: WindowInfo, among axWindows: [AXUIElement]) -> AXUIElement? {
-        for axWindow in axWindows {
-            var id: CGWindowID = 0
-            if axWindowID(axWindow, &id) == .success, id == window.id {
-                return axWindow
-            }
+    private static func resolve(
+        _ window: WindowInfo,
+        among axWindows: [AXUIElement],
+        allowGeometryFallback: Bool
+    ) -> AXUIElement? {
+        for axWindow in axWindows where axWindowID(of: axWindow) == window.id {
+            return axWindow
         }
 
         if !window.title.isEmpty {
@@ -371,7 +408,8 @@ final class WindowManager: Sendable {
             }
         }
 
-        // Critério de desempate por bounds: acha o elemento com geometria mais próxima
+        guard allowGeometryFallback else { return nil }
+
         var bestMatch: AXUIElement?
         var minDistance: CGFloat = .infinity
 
@@ -388,33 +426,65 @@ final class WindowManager: Sendable {
             }
         }
 
-        if minDistance < 10000 {
-            return bestMatch
-        }
-
-        return axWindows.first
+        return minDistance < 10000 ? bestMatch : nil
     }
 
-    private func performOnTargetAXWindow(for window: WindowInfo, action: @escaping @Sendable (AXUIElement) -> Void) {
+    private func performOnTargetAXWindow(
+        for window: WindowInfo,
+        allowGeometryFallback: Bool,
+        action: @escaping @Sendable (AXUIElement) -> Void
+    ) {
         Task.detached(priority: .userInitiated) {
             let axWindows = Self.axWindows(pid: window.pid, timeout: Self.axActionTimeout)
-            guard let target = Self.resolve(window, among: axWindows) else { return }
+            guard let target = Self.resolve(
+                window,
+                among: axWindows,
+                allowGeometryFallback: allowGeometryFallback
+            ) else { return }
             action(target)
         }
     }
+
+    private static func press(_ buttonAttribute: String, on target: AXUIElement) {
+        var buttonRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(target, buttonAttribute as CFString, &buttonRef) == .success,
+              let button = buttonRef,
+              CFGetTypeID(button) == AXUIElementGetTypeID() else {
+            return
+        }
+        AXUIElementPerformAction(unsafeDowncast(button as AnyObject, to: AXUIElement.self), kAXPressAction as CFString)
+    }
+
+    private static func isMinimized(_ target: AXUIElement) -> Bool {
+        var minimizedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(target, kAXMinimizedAttribute as CFString, &minimizedRef) == .success else {
+            return false
+        }
+        return (minimizedRef as? NSNumber)?.boolValue == true
+    }
+
+    private static func setFrame(_ frame: CGRect, on target: AXUIElement) {
+        var origin = frame.origin
+        var size = frame.size
+        if let positionValue = AXValueCreate(.cgPoint, &origin) {
+            AXUIElementSetAttributeValue(target, kAXPositionAttribute as CFString, positionValue)
+        }
+        if let sizeValue = AXValueCreate(.cgSize, &size) {
+            AXUIElementSetAttributeValue(target, kAXSizeAttribute as CFString, sizeValue)
+        }
+    }
+
+    // MARK: - Actions
 
     func focus(window: WindowInfo) {
         guard let app = NSRunningApplication(processIdentifier: window.pid) else { return }
         if app.isHidden { app.unhide() }
         app.activate()
 
-        performOnTargetAXWindow(for: window) { target in
-            var minimizedRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(target, kAXMinimizedAttribute as CFString, &minimizedRef) == .success,
-               (minimizedRef as? NSNumber)?.boolValue == true {
+        performOnTargetAXWindow(for: window, allowGeometryFallback: true) { target in
+            if Self.isMinimized(target) {
                 AXUIElementSetAttributeValue(target, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
             }
-
             AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue)
             AXUIElementPerformAction(target, kAXRaiseAction as CFString)
         }
@@ -429,42 +499,98 @@ final class WindowManager: Sendable {
     }
 
     func close(window: WindowInfo) {
-        performOnTargetAXWindow(for: window) { target in
-            var closeButtonRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(target, kAXCloseButtonAttribute as CFString, &closeButtonRef) == .success,
-                  let closeButton = closeButtonRef,
-                  CFGetTypeID(closeButton) == AXUIElementGetTypeID() else {
-                return
-            }
-            AXUIElementPerformAction(unsafeDowncast(closeButton as AnyObject, to: AXUIElement.self), kAXPressAction as CFString)
+        performOnTargetAXWindow(for: window, allowGeometryFallback: false) { target in
+            Self.press(kAXCloseButtonAttribute, on: target)
         }
     }
 
     func toggleMinimize(window: WindowInfo) {
-        performOnTargetAXWindow(for: window) { target in
-            var minimizedRef: CFTypeRef?
-            let isMin = (AXUIElementCopyAttributeValue(target, kAXMinimizedAttribute as CFString, &minimizedRef) == .success)
-                && ((minimizedRef as? NSNumber)?.boolValue == true)
-            AXUIElementSetAttributeValue(target, kAXMinimizedAttribute as CFString, isMin ? kCFBooleanFalse : kCFBooleanTrue)
+        performOnTargetAXWindow(for: window, allowGeometryFallback: false) { target in
+            let minimized = Self.isMinimized(target)
+            AXUIElementSetAttributeValue(
+                target,
+                kAXMinimizedAttribute as CFString,
+                minimized ? kCFBooleanFalse : kCFBooleanTrue
+            )
         }
     }
 
     func toggleZoom(window: WindowInfo) {
-        performOnTargetAXWindow(for: window) { target in
-            var zoomButtonRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(target, kAXZoomButtonAttribute as CFString, &zoomButtonRef) == .success,
-                  let zoomButton = zoomButtonRef,
-                  CFGetTypeID(zoomButton) == AXUIElementGetTypeID() else {
-                return
-            }
-            AXUIElementPerformAction(unsafeDowncast(zoomButton as AnyObject, to: AXUIElement.self), kAXPressAction as CFString)
+        performOnTargetAXWindow(for: window, allowGeometryFallback: false) { target in
+            Self.press(kAXZoomButtonAttribute, on: target)
         }
     }
 
-    private struct Unchecked<Value>: @unchecked Sendable {
-        let value: Value
+    func tile(window: WindowInfo, side: TileSide, screens: ScreenSnapshot) {
+        let index = screens.screenIndex(containingCoreGraphics: window.bounds) ?? 0
+        guard let visible = screens.visibleFrame(at: index) else { return }
 
-        init(_ value: Value) { self.value = value }
+        let half = CGRect(
+            x: side == .left ? visible.minX : visible.midX,
+            y: visible.minY,
+            width: (visible.width / 2).rounded(.down),
+            height: visible.height
+        )
+        let target = screens.coreGraphicsRect(fromAppKit: half).integral
+
+        performOnTargetAXWindow(for: window, allowGeometryFallback: false) { element in
+            if Self.isMinimized(element) {
+                AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            }
+            Self.setFrame(target, on: element)
+        }
+    }
+
+    func moveToNextDisplay(window: WindowInfo, screens: ScreenSnapshot) {
+        guard screens.count > 1 else { return }
+        let currentIndex = screens.screenIndex(containingCoreGraphics: window.bounds) ?? 0
+        let nextIndex = (currentIndex + 1) % screens.count
+        guard let current = screens.visibleFrame(at: currentIndex),
+              let next = screens.visibleFrame(at: nextIndex) else { return }
+
+        let appKitBounds = screens.appKitRect(fromCoreGraphics: window.bounds)
+        let relativeX = current.width > 0 ? (appKitBounds.minX - current.minX) / current.width : 0
+        let relativeY = current.height > 0 ? (appKitBounds.minY - current.minY) / current.height : 0
+
+        let width = min(appKitBounds.width, next.width)
+        let height = min(appKitBounds.height, next.height)
+        let x = min(max(next.minX, next.minX + relativeX * next.width), next.maxX - width)
+        let y = min(max(next.minY, next.minY + relativeY * next.height), next.maxY - height)
+
+        let target = screens
+            .coreGraphicsRect(fromAppKit: CGRect(x: x, y: y, width: width, height: height))
+            .integral
+
+        performOnTargetAXWindow(for: window, allowGeometryFallback: false) { element in
+            Self.setFrame(target, on: element)
+        }
+    }
+
+    // MARK: - Thumbnails
+
+    private func shareableWindows() async -> [CGWindowID: SCWindow]? {
+        let now = ContinuousClock.now
+        let cached = shareable.withLock { cache -> [CGWindowID: SCWindow]? in
+            guard let fetchedAt = cache.fetchedAt,
+                  now - fetchedAt < Self.shareableContentLifetime,
+                  let windows = cache.windows else { return nil }
+            return windows.value
+        }
+        if let cached { return cached }
+
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else {
+            return nil
+        }
+
+        var map: [CGWindowID: SCWindow] = [:]
+        map.reserveCapacity(content.windows.count)
+        for window in content.windows { map[window.windowID] = window }
+
+        shareable.withLock { cache in
+            cache.windows = Unchecked(map)
+            cache.fetchedAt = ContinuousClock.now
+        }
+        return map
     }
 
     func captureThumbnails(
@@ -472,17 +598,12 @@ final class WindowManager: Sendable {
         priorityID: CGWindowID?,
         onCapture: @escaping @Sendable @MainActor (CGWindowID, CGImage) -> Void
     ) async {
-        guard !windows.isEmpty,
-              let shareable = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true),
-              !Task.isCancelled else {
+        guard !windows.isEmpty, !Task.isCancelled, let scWindows = await shareableWindows(), !Task.isCancelled else {
             return
         }
 
-        var scWindows: [CGWindowID: SCWindow] = [:]
-        scWindows.reserveCapacity(shareable.windows.count)
-        for window in shareable.windows { scWindows[window.windowID] = window }
-
-        var ordered = windows.filter { scWindows[$0.id] != nil }
+        let now = ContinuousClock.now
+        var ordered = windows.filter { scWindows[$0.id] != nil && !isFresh($0, now: now) }
         if let priorityID, let index = ordered.firstIndex(where: { $0.id == priorityID }) {
             ordered.insert(ordered.remove(at: index), at: 0)
         }
@@ -500,7 +621,7 @@ final class WindowManager: Sendable {
                 let scWindow = Unchecked(match)
                 group.addTask { [self] in
                     guard !Task.isCancelled else { return nil }
-                    guard let image = await capture(scWindow.value, aspectOf: window.bounds) else { return nil }
+                    guard let image = await capture(scWindow.value, window: window) else { return nil }
                     guard !Task.isCancelled else { return nil }
                     return (window.id, image)
                 }
@@ -518,9 +639,9 @@ final class WindowManager: Sendable {
         }
     }
 
-    private func capture(_ scWindow: SCWindow, aspectOf bounds: CGRect) async -> CGImage? {
+    private func capture(_ scWindow: SCWindow, window: WindowInfo) async -> CGImage? {
         let configuration = SCStreamConfiguration()
-        let (width, height) = Self.thumbnailPixelSize(for: bounds)
+        let (width, height) = Self.thumbnailPixelSize(for: window.bounds)
         configuration.width = width
         configuration.height = height
         configuration.showsCursor = false
@@ -529,10 +650,13 @@ final class WindowManager: Sendable {
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
 
         let filter = SCContentFilter(desktopIndependentWindow: scWindow)
-        guard let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration) else {
+        guard let image = try? await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: configuration
+        ) else {
             return nil
         }
-        store(image, for: scWindow.windowID)
+        store(image, for: scWindow.windowID, bounds: window.bounds)
         return image
     }
 

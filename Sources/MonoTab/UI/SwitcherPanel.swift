@@ -25,8 +25,7 @@ final class SwitcherPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-@MainActor
-final class SwitcherPanelController: NSObject, NSWindowDelegate {
+final class SwitcherPanelController: NSObject, NSWindowDelegate, HotkeyManagerDelegate {
     static let shared = SwitcherPanelController()
 
     let panel: SwitcherPanel
@@ -34,6 +33,7 @@ final class SwitcherPanelController: NSObject, NSWindowDelegate {
 
     private let hostingView: NSHostingView<SwitcherView>
     private var outsideClickMonitor: Any?
+    private var presentationGeneration = 0
 
     private override init() {
         panel = SwitcherPanel()
@@ -84,9 +84,13 @@ final class SwitcherPanelController: NSObject, NSWindowDelegate {
         panel.isVisible
     }
 
+    // MARK: - Presentation
+
     func show(appOnly: Bool = false) {
+        presentationGeneration += 1
+
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        viewModel.refreshWindows(appOnly: appOnly, targetPID: frontPID)
+        viewModel.refreshWindows(appOnly: appOnly, targetPID: frontPID, screens: ScreenSnapshot.capture())
         layoutPanel(animated: false)
 
         panel.alphaValue = 0
@@ -105,9 +109,15 @@ final class SwitcherPanelController: NSObject, NSWindowDelegate {
     }
 
     func hide() {
+        presentationGeneration += 1
+        let generation = presentationGeneration
+
         stopOutsideClickMonitor()
+        PermissionsManager.shared.stopPolling()
         viewModel.cancelPendingWork()
+        viewModel.pendingConfirmation = nil
         viewModel.closeSettings()
+        viewModel.closeHelp()
         viewModel.exitSearchMode()
         viewModel.closePreview()
 
@@ -116,7 +126,7 @@ final class SwitcherPanelController: NSObject, NSWindowDelegate {
             panel.animator().alphaValue = 0.0
         }, completionHandler: { [weak self] in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.presentationGeneration == generation else { return }
                 self.panel.orderOut(nil)
                 self.panel.alphaValue = 1.0
                 self.syncOverlayState()
@@ -124,15 +134,97 @@ final class SwitcherPanelController: NSObject, NSWindowDelegate {
         })
     }
 
-    func enterSearchMode() {
-        viewModel.enterSearchMode()
+    func showPreferences() {
+        if !panel.isVisible { show(appOnly: false) }
+        viewModel.openSettings()
+    }
+
+    func syncOverlayState() {
+        HotkeyManager.shared.updateOverlayState(
+            isVisible: panel.isVisible,
+            isTextEntryActive: viewModel.isTextEntryActive
+        )
+        if panel.isVisible, viewModel.isSettingsOpen {
+            PermissionsManager.shared.startPolling()
+        } else {
+            PermissionsManager.shared.stopPolling()
+        }
+    }
+
+    // MARK: - Hotkey routing
+
+    func perform(_ action: HotkeyAction) {
+        if viewModel.pendingConfirmation != nil {
+            switch action {
+            case .confirm: resolveConfirmation()
+            case .cancel: viewModel.pendingConfirmation = nil
+            default: break
+            }
+            return
+        }
+
+        switch action {
+        case let .open(appOnly):
+            show(appOnly: appOnly)
+        case let .cycle(forward):
+            if panel.isVisible {
+                viewModel.cycle(forward: forward)
+            } else {
+                show(appOnly: false)
+            }
+        case .confirm:
+            if viewModel.isHelpOpen {
+                viewModel.closeHelp()
+            } else {
+                confirmSelection()
+            }
+        case .cancel:
+            handleEscape()
+        case let .navigate(direction):
+            let isFullscreen = PreferencesManager.shared.displayMode == .fullscreen
+            viewModel.navigate(direction: direction, columns: viewModel.columnCount(isFullscreen: isFullscreen))
+        case .enterSearch:
+            viewModel.enterSearchMode()
+        case .toggleHelp:
+            viewModel.toggleHelp()
+        case .togglePreview:
+            guard viewModel.isPreviewOpen || viewModel.selectedWindow != nil else { return }
+            viewModel.togglePreview()
+        case .closeWindow:
+            closeSelectedWindow()
+        case .quitApp:
+            quitSelectedApp()
+        case .hideApp:
+            hideSelectedApp()
+        case .toggleMinimize:
+            withSelectedWindow { WindowManager.shared.toggleMinimize(window: $0) }
+        case .toggleZoom:
+            withSelectedWindow { WindowManager.shared.toggleZoom(window: $0) }
+        case let .tile(side):
+            withSelectedWindow { WindowManager.shared.tile(window: $0, side: side, screens: ScreenSnapshot.capture()) }
+        case .moveToNextDisplay:
+            withSelectedWindow {
+                WindowManager.shared.moveToNextDisplay(window: $0, screens: ScreenSnapshot.capture())
+            }
+        case let .quickSelect(number):
+            quickSelect(number: number)
+        }
+    }
+
+    private func withSelectedWindow(_ body: (WindowInfo) -> Void) {
+        guard let window = viewModel.selectedWindow else { return }
+        body(window)
     }
 
     func handleEscape() {
-        if viewModel.isPreviewOpen {
+        if viewModel.pendingConfirmation != nil {
+            viewModel.pendingConfirmation = nil
+        } else if viewModel.isHelpOpen {
+            viewModel.closeHelp()
+        } else if viewModel.isPreviewOpen {
             viewModel.closePreview()
         } else if viewModel.isSettingsOpen {
-            hide()
+            viewModel.closeSettings()
         } else if viewModel.isSearchMode {
             if viewModel.searchQuery.isEmpty {
                 viewModel.exitSearchMode()
@@ -148,6 +240,7 @@ final class SwitcherPanelController: NSObject, NSWindowDelegate {
         let target = viewModel.selectedWindow
         hide()
         if let target {
+            WindowActivationHistory.shared.record(window: target)
             WindowManager.shared.focus(window: target)
         }
     }
@@ -158,82 +251,76 @@ final class SwitcherPanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    func toggleMinimizeSelected() {
-        viewModel.toggleMinimizeSelected()
-    }
-
-    func toggleZoomSelected() {
-        viewModel.toggleZoomSelected()
-    }
-
     func hideSelectedApp() {
-        viewModel.hideSelectedApp()
+        withSelectedWindow { WindowManager.shared.hideApplication(pid: $0.pid) }
     }
 
-    func showPreferences() {
-        if !panel.isVisible { show(appOnly: false) }
-        viewModel.openSettings()
+    // MARK: - Destructive actions
+
+    private func resolveConfirmation() {
+        guard let confirmation = viewModel.pendingConfirmation else { return }
+        viewModel.pendingConfirmation = nil
+        confirmation.perform()
     }
 
-    func quitSelectedApp() {
-        guard let window = viewModel.selectedWindow else { return }
-        WindowManager.shared.quitApplication(pid: window.pid)
-        viewModel.removeWindows(pid: window.pid)
+    func confirm(_ confirmation: PendingConfirmation) {
+        guard PreferencesManager.shared.confirmDestructiveActions else {
+            confirmation.perform()
+            return
+        }
+        viewModel.pendingConfirmation = confirmation
     }
 
     func close(window: WindowInfo) {
-        WindowManager.shared.close(window: window)
-        viewModel.removeWindow(id: window.id)
-    }
-
-    func closeSelectedWindow() {
-        guard let window = viewModel.selectedWindow else { return }
-        close(window: window)
-    }
-
-    func syncOverlayState() {
-        HotkeyManager.shared.updateOverlayState(
-            isVisible: panel.isVisible,
-            isSearchMode: viewModel.isSearchMode,
-            isSettingsOpen: viewModel.isSettingsOpen
+        confirm(
+            PendingConfirmation(
+                title: "Close window?",
+                message: "\(window.appName) — \(window.displayTitle)",
+                confirmTitle: "Close",
+                icon: "xmark.circle.fill"
+            ) {
+                WindowManager.shared.close(window: window)
+                WindowActivationHistory.shared.forget(windowID: window.id)
+                SwitcherPanelController.shared.viewModel.removeWindow(id: window.id)
+            }
         )
     }
 
-    private static let panelChromeHeight: CGFloat = 200
+    func closeSelectedWindow() {
+        withSelectedWindow { close(window: $0) }
+    }
+
+    func quitSelectedApp() {
+        withSelectedWindow { window in
+            confirm(
+                PendingConfirmation(
+                    title: "Quit \(window.appName)?",
+                    message: "Every window of this app will be closed.",
+                    confirmTitle: "Quit",
+                    icon: "power.circle.fill"
+                ) {
+                    WindowManager.shared.quitApplication(pid: window.pid)
+                    WindowActivationHistory.shared.forget(pid: window.pid)
+                    SwitcherPanelController.shared.viewModel.removeWindows(pid: window.pid)
+                }
+            )
+        }
+    }
+
+    // MARK: - Layout
 
     func layoutPanel(animated: Bool = true) {
         guard let screen = activeScreen() else { return }
         let visible = screen.visibleFrame
-        viewModel.maxGridHeight = max(240, visible.height - Self.panelChromeHeight)
+        viewModel.maxGridHeight = max(240, visible.height - SwitcherMetrics.reservedVerticalChrome)
 
-        let coversScreen = PreferencesManager.shared.displayMode == .fullscreen || viewModel.isSettingsOpen || viewModel.isPreviewOpen
+        let isFullscreen = PreferencesManager.shared.displayMode == .fullscreen
         let target: NSRect
 
-        if coversScreen {
+        if isFullscreen {
             target = visible
         } else {
-            let columnCount = viewModel.columnCount(isFullscreen: false)
-            let cardW: CGFloat = 264
-            let cardH: CGFloat = 162
-            let spacingH: CGFloat = 16
-            let spacingV: CGFloat = 14
-            let horizontalPadding: CGFloat = 36
-            let contentWidth = CGFloat(columnCount) * cardW + CGFloat(max(0, columnCount - 1)) * spacingH + horizontalPadding + 48
-            let finalWidth = min(visible.width - 60, max(700, contentWidth))
-
-            let rowCount = max(1, (viewModel.filteredWindows.count + columnCount - 1) / max(1, columnCount))
-            let gridHeight = CGFloat(rowCount) * cardH + CGFloat(max(0, rowCount - 1)) * spacingV + 24
-            let chromeHeight: CGFloat = viewModel.isSearchMode ? 175 : 130
-            let contentHeight = min(viewModel.maxGridHeight + chromeHeight, gridHeight + chromeHeight)
-            let finalHeight = min(visible.height - 60, max(280, contentHeight))
-
-            let size = NSSize(width: finalWidth, height: finalHeight)
-            target = NSRect(
-                x: visible.midX - size.width / 2,
-                y: visible.midY - size.height / 2,
-                width: size.width,
-                height: size.height
-            ).integral
+            target = centered(size: floatingSize(in: visible), in: visible)
         }
 
         guard panel.frame != target else { return }
@@ -251,13 +338,52 @@ final class SwitcherPanelController: NSObject, NSWindowDelegate {
         }
     }
 
+    private func floatingSize(in visible: NSRect) -> NSSize {
+        let padding: CGFloat = 40
+
+        if let sheet = viewModel.activeSheet {
+            let size: CGSize
+            switch sheet {
+            case .settings: size = SwitcherMetrics.settingsSize
+            case .help: size = SwitcherMetrics.helpSize
+            case .preview: size = SwitcherMetrics.previewSize
+            }
+            return NSSize(
+                width: min(visible.width - padding, size.width + padding),
+                height: min(visible.height - padding, size.height + padding)
+            )
+        }
+
+        let columnCount = viewModel.columnCount(isFullscreen: false)
+        let contentWidth = SwitcherMetrics.contentWidth(columns: columnCount, isFullscreen: false)
+        let width = min(visible.width - SwitcherMetrics.screenMargin, max(SwitcherMetrics.minPanelWidth, contentWidth))
+
+        let rows = SwitcherMetrics.rowCount(items: viewModel.filteredWindows.count, columns: columnCount)
+        let gridHeight = SwitcherMetrics.gridHeight(rows: rows, isFullscreen: false)
+        let chrome = viewModel.isSearchMode ? SwitcherMetrics.chromeSearching : SwitcherMetrics.chromeIdle
+        let contentHeight = min(viewModel.maxGridHeight + chrome, gridHeight + chrome)
+        let height = min(visible.height - SwitcherMetrics.screenMargin, max(SwitcherMetrics.minPanelHeight, contentHeight))
+
+        return NSSize(width: width, height: height)
+    }
+
+    private func centered(size: NSSize, in visible: NSRect) -> NSRect {
+        NSRect(
+            x: visible.midX - size.width / 2,
+            y: visible.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        ).integral
+    }
+
     private func activeScreen() -> NSScreen? {
         if PreferencesManager.shared.screenTarget == .activeWindow,
            let frontmostApp = NSWorkspace.shared.frontmostApplication,
            let window = viewModel.windows.first(where: { $0.pid == frontmostApp.processIdentifier }) {
-            let center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
-            if let screen = NSScreen.screens.first(where: { NSMouseInRect(center, $0.frame, false) }) {
-                return screen
+            let snapshot = ScreenSnapshot.capture()
+            if let index = snapshot.screenIndex(containingCoreGraphics: window.bounds),
+               NSScreen.screens.indices.contains(index) {
+                return NSScreen.screens[index]
             }
         }
 

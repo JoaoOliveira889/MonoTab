@@ -2,18 +2,24 @@ import Foundation
 import Observation
 import ServiceManagement
 
-enum ShortcutPreference: String, CaseIterable, Identifiable, Sendable {
+nonisolated protocol PreferenceOption: RawRepresentable, CaseIterable, Identifiable, Sendable where RawValue == String {
+    var displayName: String { get }
+}
+
+extension PreferenceOption {
+    nonisolated var id: String { rawValue }
+}
+
+nonisolated enum ShortcutPreference: String, PreferenceOption {
     case optionTab
     case commandTab
     case both
 
-    var id: String { rawValue }
-
     var displayName: String {
         switch self {
-        case .optionTab: "⌥ Option + Tab"
-        case .commandTab: "⌘ Command + Tab"
-        case .both: "Both (⌥ & ⌘)"
+        case .optionTab: "Option + Tab"
+        case .commandTab: "Command + Tab"
+        case .both: "Both"
         }
     }
 
@@ -27,18 +33,16 @@ enum ShortcutPreference: String, CaseIterable, Identifiable, Sendable {
 
     var hint: String {
         switch self {
-        case .optionTab: "Classic MonoTab shortcut without system interference."
+        case .optionTab: "Classic MonoTab shortcut, no system interference."
         case .commandTab: "Replaces the default macOS application switcher."
-        case .both: "Allows using both ⌥ Tab and ⌘ Tab to switch windows."
+        case .both: "Accepts ⌥ Tab and ⌘ Tab to switch windows."
         }
     }
 }
 
-enum DisplayModePreference: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum DisplayModePreference: String, PreferenceOption {
     case compact
     case fullscreen
-
-    var id: String { rawValue }
 
     var displayName: String {
         switch self {
@@ -48,11 +52,9 @@ enum DisplayModePreference: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum ScreenTargetPreference: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum ScreenTargetPreference: String, PreferenceOption {
     case mouseLocation
     case activeWindow
-
-    var id: String { rawValue }
 
     var displayName: String {
         switch self {
@@ -62,7 +64,6 @@ enum ScreenTargetPreference: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-@MainActor
 @Observable
 final class PreferencesManager {
     static let shared = PreferencesManager()
@@ -71,55 +72,67 @@ final class PreferencesManager {
         static let shortcut = "monotab_shortcut_preference"
         static let displayMode = "monotab_display_mode"
         static let showMinimized = "monotab_show_minimized"
-        static let showAppTabs = "monotab_show_app_tabs"
+        static let groupBrowserTabs = "monotab_group_browser_tabs"
+        static let legacyShowAppTabs = "monotab_show_app_tabs"
         static let currentSpaceOnly = "monotab_current_space_only"
         static let showMenuBarIcon = "monotab_show_menu_bar_icon"
         static let screenTarget = "monotab_screen_target"
         static let showQuickShortcuts = "monotab_show_quick_shortcuts"
+        static let accent = "monotab_accent"
+        static let recentOrdering = "monotab_recent_ordering"
+        static let confirmDestructive = "monotab_confirm_destructive"
     }
+
+    private let defaults = UserDefaults.standard
 
     var shortcut: ShortcutPreference {
         didSet {
             guard shortcut != oldValue else { return }
-            UserDefaults.standard.set(shortcut.rawValue, forKey: Key.shortcut)
+            defaults.set(shortcut.rawValue, forKey: Key.shortcut)
             HotkeyManager.shared.setShortcutPreference(shortcut)
         }
     }
 
     var displayMode: DisplayModePreference {
-        didSet {
-            guard displayMode != oldValue else { return }
-            UserDefaults.standard.set(displayMode.rawValue, forKey: Key.displayMode)
-        }
+        didSet { defaults.set(displayMode.rawValue, forKey: Key.displayMode) }
     }
 
     var screenTarget: ScreenTargetPreference {
-        didSet {
-            guard screenTarget != oldValue else { return }
-            UserDefaults.standard.set(screenTarget.rawValue, forKey: Key.screenTarget)
-        }
+        didSet { defaults.set(screenTarget.rawValue, forKey: Key.screenTarget) }
+    }
+
+    var accent: AccentPreference {
+        didSet { defaults.set(accent.rawValue, forKey: Key.accent) }
     }
 
     var showQuickShortcuts: Bool {
-        didSet { UserDefaults.standard.set(showQuickShortcuts, forKey: Key.showQuickShortcuts) }
+        didSet { defaults.set(showQuickShortcuts, forKey: Key.showQuickShortcuts) }
     }
 
     var showMinimizedWindows: Bool {
-        didSet { UserDefaults.standard.set(showMinimizedWindows, forKey: Key.showMinimized) }
+        didSet { defaults.set(showMinimizedWindows, forKey: Key.showMinimized) }
     }
 
-    var showAppTabs: Bool {
-        didSet { UserDefaults.standard.set(showAppTabs, forKey: Key.showAppTabs) }
+    var groupBrowserTabs: Bool {
+        didSet { defaults.set(groupBrowserTabs, forKey: Key.groupBrowserTabs) }
     }
 
     var currentSpaceOnly: Bool {
-        didSet { UserDefaults.standard.set(currentSpaceOnly, forKey: Key.currentSpaceOnly) }
+        didSet { defaults.set(currentSpaceOnly, forKey: Key.currentSpaceOnly) }
+    }
+
+    var useRecentOrdering: Bool {
+        didSet { defaults.set(useRecentOrdering, forKey: Key.recentOrdering) }
+    }
+
+    var confirmDestructiveActions: Bool {
+        didSet { defaults.set(confirmDestructiveActions, forKey: Key.confirmDestructive) }
     }
 
     var showMenuBarIcon: Bool {
         didSet {
             guard showMenuBarIcon != oldValue else { return }
-            UserDefaults.standard.set(showMenuBarIcon, forKey: Key.showMenuBarIcon)
+            defaults.set(showMenuBarIcon, forKey: Key.showMenuBarIcon)
             StatusItemController.shared.setVisible(showMenuBarIcon)
         }
     }
@@ -144,20 +157,52 @@ final class PreferencesManager {
 
     @ObservationIgnored private var isRevertingLaunchAtLogin = false
 
+    var showAppTabs: Bool { !groupBrowserTabs }
+
     private init() {
         let defaults = UserDefaults.standard
-        shortcut = defaults.string(forKey: Key.shortcut).flatMap(ShortcutPreference.init) ?? .both
-        displayMode = defaults.string(forKey: Key.displayMode).flatMap(DisplayModePreference.init) ?? .compact
-        screenTarget = defaults.string(forKey: Key.screenTarget).flatMap(ScreenTargetPreference.init) ?? .mouseLocation
-        showQuickShortcuts = defaults.object(forKey: Key.showQuickShortcuts) as? Bool ?? true
-        showMinimizedWindows = defaults.bool(forKey: Key.showMinimized)
-        showAppTabs = defaults.bool(forKey: Key.showAppTabs)
-        currentSpaceOnly = defaults.object(forKey: Key.currentSpaceOnly) as? Bool ?? true
-        showMenuBarIcon = defaults.object(forKey: Key.showMenuBarIcon) as? Bool ?? true
+        shortcut = defaults.option(Key.shortcut, default: .both)
+        displayMode = defaults.option(Key.displayMode, default: .compact)
+        screenTarget = defaults.option(Key.screenTarget, default: .mouseLocation)
+        accent = defaults.option(Key.accent, default: .system)
+        showQuickShortcuts = defaults.flag(Key.showQuickShortcuts, default: true)
+        showMinimizedWindows = defaults.flag(Key.showMinimized, default: false)
+        currentSpaceOnly = defaults.flag(Key.currentSpaceOnly, default: true)
+        showMenuBarIcon = defaults.flag(Key.showMenuBarIcon, default: true)
+        useRecentOrdering = defaults.flag(Key.recentOrdering, default: true)
+        confirmDestructiveActions = defaults.flag(Key.confirmDestructive, default: true)
+        groupBrowserTabs = defaults.flag(
+            Key.groupBrowserTabs,
+            default: !defaults.flag(Key.legacyShowAppTabs, default: false)
+        )
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     func toggleDisplayMode() {
         displayMode = displayMode == .compact ? .fullscreen : .compact
+    }
+
+    func restoreDefaults() {
+        shortcut = .both
+        displayMode = .compact
+        screenTarget = .mouseLocation
+        accent = .system
+        showQuickShortcuts = true
+        showMinimizedWindows = false
+        groupBrowserTabs = true
+        currentSpaceOnly = true
+        useRecentOrdering = true
+        confirmDestructiveActions = true
+        showMenuBarIcon = true
+    }
+}
+
+private extension UserDefaults {
+    func flag(_ key: String, default fallback: Bool) -> Bool {
+        object(forKey: key) as? Bool ?? fallback
+    }
+
+    func option<Option: PreferenceOption>(_ key: String, default fallback: Option) -> Option {
+        string(forKey: key).flatMap(Option.init(rawValue:)) ?? fallback
     }
 }

@@ -1,13 +1,26 @@
 import AppKit
 import ApplicationServices
+import Foundation
 import Observation
 
-@MainActor
+nonisolated enum PermissionKind: Sendable {
+    case accessibility
+    case screenRecording
+
+    var settingsURL: String {
+        switch self {
+        case .accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        case .screenRecording: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+    }
+}
+
 @Observable
 final class PermissionsManager {
     static let shared = PermissionsManager()
 
     private static let cacheLifetime = Duration.milliseconds(750)
+    private static let pollInterval = Duration.milliseconds(900)
 
     private(set) var hasAccessibility = false
     private(set) var hasScreenRecording = false
@@ -17,6 +30,7 @@ final class PermissionsManager {
     }
 
     @ObservationIgnored private var lastRefresh: ContinuousClock.Instant?
+    @ObservationIgnored private var pollTask: Task<Void, Never>?
 
     var allGranted: Bool {
         hasAccessibility && hasScreenRecording
@@ -40,46 +54,39 @@ final class PermissionsManager {
         hasScreenRecording = CGPreflightScreenCaptureAccess()
     }
 
-    @discardableResult
-    func requestAccessibility() -> Bool {
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
-        hasAccessibility = trusted
-        lastRefresh = ContinuousClock.now
-        return trusted
-    }
-
-    @discardableResult
-    func requestScreenRecording() -> Bool {
-        if CGPreflightScreenCaptureAccess() {
-            hasScreenRecording = true
-            return true
+    func startPolling() {
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.pollInterval)
+                guard !Task.isCancelled else { return }
+                self?.refresh(force: true)
+            }
         }
-        hasScreenRecording = CGRequestScreenCaptureAccess()
+    }
+
+    func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
+    @discardableResult
+    func request(_ kind: PermissionKind) -> Bool {
         lastRefresh = ContinuousClock.now
-        return hasScreenRecording
+        switch kind {
+        case .accessibility:
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            hasAccessibility = AXIsProcessTrustedWithOptions(options)
+            return hasAccessibility
+        case .screenRecording:
+            hasScreenRecording = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
+            return hasScreenRecording
+        }
     }
 
-    func openAccessibilitySettings() {
-        open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-    }
-
-    func openScreenRecordingSettings() {
-        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-    }
-
-    func openAccessibilityPreferences() {
-        requestAccessibility()
-        openAccessibilitySettings()
-    }
-
-    func openScreenRecordingPreferences() {
-        requestScreenRecording()
-        openScreenRecordingSettings()
-    }
-
-    private func open(_ urlString: String) {
-        guard let url = URL(string: urlString) else { return }
+    func openSettings(for kind: PermissionKind) {
+        request(kind)
+        guard let url = URL(string: kind.settingsURL) else { return }
         NSWorkspace.shared.open(url)
     }
 }

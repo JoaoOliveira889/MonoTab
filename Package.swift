@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
@@ -19,8 +19,10 @@ let package = Package(
             path: "Sources/MonoTab",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
+                .defaultIsolation(MainActor.self),
                 .enableUpcomingFeature("ExistentialAny"),
-                .enableUpcomingFeature("InternalImportsByDefault")
+                .enableUpcomingFeature("InternalImportsByDefault"),
+                .enableUpcomingFeature("MemberImportVisibility")
             ]
         ),
         .testTarget(

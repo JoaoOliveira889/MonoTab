@@ -99,10 +99,12 @@ struct WindowInfoTests {
 }
 
 @Suite("WindowManager")
+@MainActor
 struct WindowManagerTests {
     @Test("Enumerating on-screen windows never reports them as minimized")
     func onScreenWindows() {
-        for window in WindowManager.shared.fetchOnScreenWindows() {
+        let screens = ScreenSnapshot.capture()
+        for window in WindowManager.shared.fetchOnScreenWindows(screens: screens) {
             #expect(!window.isMinimized)
         }
     }
@@ -114,6 +116,7 @@ struct PreferencesTests {
     @Test("Ships with windows-only, current-space defaults")
     func defaults() {
         let preferences = PreferencesManager.shared
+        #expect(preferences.groupBrowserTabs)
         #expect(!preferences.showAppTabs)
         #expect(preferences.currentSpaceOnly)
     }

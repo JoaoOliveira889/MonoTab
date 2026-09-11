@@ -152,8 +152,122 @@ struct NavigationTests {
         viewModel.closePreview()
         #expect(!viewModel.isPreviewOpen)
 
-        viewModel.openPreview()
+        viewModel.togglePreview()
         #expect(viewModel.isPreviewOpen)
+    }
+
+    @Test("Cycling forward and backward matches next and previous")
+    func cycleDirections() {
+        let viewModel = viewModel(windowCount: 3)
+        viewModel.selectedIndex = 0
+
+        viewModel.cycle(forward: true)
+        #expect(viewModel.selectedIndex == 1)
+
+        viewModel.cycle(forward: false)
+        #expect(viewModel.selectedIndex == 0)
+
+        viewModel.cycle(forward: false)
+        #expect(viewModel.selectedIndex == 2)
+    }
+
+    @Test("Every window keeps a slot after the list changes")
+    func slotsFollowWindows() {
+        let viewModel = viewModel(windowCount: 3)
+        let firstSlot = viewModel.slot(for: 2)
+
+        viewModel.removeWindow(id: 1)
+        #expect(viewModel.slot(for: 2) === firstSlot)
+    }
+
+    @Test("The active sheet reflects the open overlay, settings first")
+    func activeSheetPriority() {
+        let viewModel = viewModel(windowCount: 2)
+        #expect(viewModel.activeSheet == nil)
+
+        viewModel.togglePreview()
+        #expect(viewModel.activeSheet == .preview)
+
+        viewModel.isHelpOpen = true
+        #expect(viewModel.activeSheet == .help)
+
+        viewModel.openSettings()
+        #expect(viewModel.activeSheet == .settings)
+        #expect(viewModel.isTextEntryActive)
     }
 }
 
+@Suite("Window activation history")
+@MainActor
+struct WindowActivationHistoryTests {
+    private func window(id: CGWindowID, pid: pid_t) -> WindowInfo {
+        WindowInfo(id: id, pid: pid, appName: "App \(pid)", title: "Win \(id)", bounds: .zero)
+    }
+
+    @Test("Most recently focused windows float to the top")
+    func recencyOrdering() {
+        let history = WindowActivationHistory.shared
+        let windows = [window(id: 1, pid: 10), window(id: 2, pid: 20), window(id: 3, pid: 30)]
+
+        for window in windows { history.forget(windowID: window.id) }
+        history.record(window: windows[2])
+        history.record(window: windows[0])
+
+        let ordered = history.ordered(windows)
+        #expect(ordered.map(\.id) == [1, 3, 2])
+    }
+
+    @Test("Forgetting a window drops it back to system order")
+    func forgetting() {
+        let history = WindowActivationHistory.shared
+        let windows = [window(id: 7, pid: 70), window(id: 8, pid: 80)]
+
+        history.record(window: windows[1])
+        history.forget(windowID: 8)
+        history.forget(pid: 80)
+
+        #expect(history.ordered(windows).map(\.id) == [7, 8])
+    }
+}
+
+@Suite("Screen snapshot")
+struct ScreenSnapshotTests {
+    private let snapshot = ScreenSnapshot(
+        frames: [CGRect(x: 0, y: 0, width: 1440, height: 900)],
+        visibleFrames: [CGRect(x: 0, y: 0, width: 1440, height: 875)],
+        globalTop: 900
+    )
+
+    @Test("Converting between AppKit and CoreGraphics coordinates round-trips")
+    func coordinateRoundTrip() {
+        let appKit = CGRect(x: 100, y: 50, width: 400, height: 300)
+        let coreGraphics = snapshot.coreGraphicsRect(fromAppKit: appKit)
+
+        #expect(coreGraphics.origin.y == 550)
+        #expect(snapshot.appKitRect(fromCoreGraphics: coreGraphics) == appKit)
+    }
+
+    @Test("A single display reports no display index")
+    func singleDisplayIndex() {
+        #expect(snapshot.displayIndex(forCoreGraphics: CGRect(x: 0, y: 0, width: 100, height: 100)) == nil)
+        #expect(snapshot.screenIndex(containingCoreGraphics: CGRect(x: 10, y: 10, width: 100, height: 100)) == 0)
+    }
+}
+
+@Suite("Switcher metrics")
+struct SwitcherMetricsTests {
+    @Test("Row count never drops below one and covers every card")
+    func rowCounts() {
+        #expect(SwitcherMetrics.rowCount(items: 0, columns: 4) == 1)
+        #expect(SwitcherMetrics.rowCount(items: 4, columns: 4) == 1)
+        #expect(SwitcherMetrics.rowCount(items: 5, columns: 4) == 2)
+        #expect(SwitcherMetrics.rowCount(items: 9, columns: 0) == 9)
+    }
+
+    @Test("Fullscreen cards are wider than floating ones")
+    func cardSizes() {
+        #expect(SwitcherMetrics.card(isFullscreen: true).width > SwitcherMetrics.card(isFullscreen: false).width)
+        #expect(SwitcherMetrics.contentWidth(columns: 4, isFullscreen: true)
+            > SwitcherMetrics.contentWidth(columns: 4, isFullscreen: false))
+    }
+}

@@ -4,40 +4,33 @@ struct SearchBarView: View {
     @Binding var text: String
     @Binding var isSearchMode: Bool
     let onExit: () -> Void
-    @FocusState private var isFocused: Bool
 
-    init(
-        text: Binding<String>,
-        isSearchMode: Binding<Bool>,
-        onExit: @escaping () -> Void
-    ) {
-        self._text = text
-        self._isSearchMode = isSearchMode
-        self.onExit = onExit
-    }
+    @FocusState private var isFocused: Bool
+    @Environment(\.monoAccent) private var accent
+    @Environment(\.monoReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(isFocused ? .accentColor : .secondary)
+                .foregroundStyle(isFocused ? accent : Color.secondary)
                 .font(.system(size: 14, weight: .semibold))
-                .animation(.easeInOut(duration: 0.15), value: isFocused)
+                .monoAnimation(.easeInOut(duration: 0.15), value: isFocused, enabled: !reduceMotion)
 
-            TextField("Search windows or apps... (Esc to exit)", text: $text)
+            TextField("Search windows or apps… (Esc to exit)", text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13, weight: .regular))
                 .focused($isFocused)
-                .onTapGesture {
-                    isSearchMode = true
-                }
+                .onTapGesture { isSearchMode = true }
 
             if !text.isEmpty {
-                Button(action: { text = "" }) {
+                Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                         .font(.system(size: 13))
                 }
                 .buttonStyle(.plain)
+                .help("Clear search")
+                .accessibilityLabel("Clear search")
                 .transition(.opacity.combined(with: .scale))
             }
 
@@ -46,17 +39,12 @@ struct SearchBarView: View {
             }
             .buttonStyle(.plain)
             .help("Exit search mode (Esc)")
+            .accessibilityLabel("Exit search mode")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .glassField(isFocused: isFocused)
-        .onAppear {
-            if isSearchMode {
-                isFocused = true
-            }
-        }
-        .onChange(of: isSearchMode) { _, active in
-            isFocused = active
-        }
+        .onAppear { isFocused = isSearchMode }
+        .onChange(of: isSearchMode) { _, active in isFocused = active }
     }
 }
